@@ -7,6 +7,11 @@ build/
 # Local machine configuration
 local.properties
 
+# Signing material — never commit these
+*.jks
+*.keystore
+keystore.properties
+
 # IDE
 .idea/
 *.iml

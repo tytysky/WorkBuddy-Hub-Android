@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -13,11 +15,43 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "1.0"
+        versionName = "0.1.0"
+    }
+
+    // Release signing reads keystore.properties, which is git-ignored. When it is
+    // absent the release build falls back to no signing so a fresh clone still
+    // compiles; a signed artifact requires the properties file to be present.
+    val keystoreProperties = Properties()
+    rootProject.file("keystore.properties").takeIf { it.exists() }?.inputStream()?.use {
+        keystoreProperties.load(it)
+    }
+
+    signingConfigs {
+        create("release") {
+            // A missing keystore.properties leaves these empty, and the build
+            // then falls back to an unsigned artifact rather than failing.
+            val store = keystoreProperties.getProperty("storeFile")
+            if (!store.isNullOrBlank() && rootProject.file(store).exists()) {
+                storeFile = rootProject.file(store)
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
 
     buildFeatures {
         compose = true
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            // The config only exists when keystore.properties was found, so a
+            // clone without signing material still produces an unsigned build
+            // instead of failing the build.
+            signingConfig = signingConfigs.getByName("release")
+        }
     }
 
     packaging {
