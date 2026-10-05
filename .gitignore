@@ -1,0 +1,20 @@
+# Build output
+build/
+.gradle/
+*.apk
+*.aab
+
+# Local machine configuration
+local.properties
+
+# IDE
+.idea/
+*.iml
+.kotlin/
+
+# Local-only build helper (see tools/aapt2 in this environment)
+tools/
+
+# OS
+.DS_Store
+Thumbs.db
