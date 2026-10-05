@@ -1,4 +1,4 @@
-# WB Hub
+# WorkBuddy Hub Android
 
 English | [中文](./README.md)
 
