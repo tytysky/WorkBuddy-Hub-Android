@@ -7,8 +7,10 @@ import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.wbhub.app.bridge.CallRecord
+import com.wbhub.app.data.CheckinItem
 import com.wbhub.app.proto.Balance
 import com.wbhub.app.proto.Credential
+import com.wbhub.app.proto.SavedAccount
 import com.wbhub.app.proto.HubModel
 import com.wbhub.app.proto.Wire
 
@@ -29,6 +31,7 @@ data class HubState(
     val status: String = "",
     val balance: Balance? = null,
     val checkinMessage: String = "",
+    val checkinItems: List<CheckinItem> = emptyList(),
     val models: List<HubModel> = emptyList(),
     val notificationsAllowed: Boolean = true,
     val batteryExempt: Boolean = false,
@@ -40,9 +43,13 @@ data class HubState(
     val overlayOpacity: Float = 0.94f,
     val overlayLocked: Boolean = false,
     val realm: Wire.Region = Wire.Region.CN,
-    val hasCnCredential: Boolean = false,
-    val hasGlobalCredential: Boolean = false,
+    val accounts: Map<Wire.Region, List<SavedAccount>> = emptyMap(),
+    val activeAccountId: String? = null,
 )
 
 /** Which operation is in flight, so each control can show its own indicator. */
 enum class Loading { CHECKIN, BALANCE, MODELS }
+
+/** Whether any build holds at least one saved account. */
+val HubState.hasAnyCredential: Boolean
+    get() = accounts.values.any { it.isNotEmpty() }

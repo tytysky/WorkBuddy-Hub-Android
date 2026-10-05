@@ -41,10 +41,13 @@ fun HubApp(
     onClearCalls: () -> Unit,
     onRefreshCalls: () -> Unit,
     onSwitchRealm: (Wire.Region) -> Unit,
+    onSwitchAccount: (String) -> Unit,
+    onDeleteAccount: (String) -> Unit,
     onOpenCredentialDetails: () -> Unit,
     onDismissCredentialDetails: () -> Unit,
     onCopyField: (String, String) -> Unit,
     onCheckin: () -> Unit,
+    onCheckinAll: () -> Unit,
     onRefreshBalance: () -> Unit,
     onCopyEndpoint: () -> Unit,
     onCopyModel: (String) -> Unit,
@@ -102,6 +105,8 @@ fun HubApp(
                         HubTab.Credential -> CredentialScreen(
                             state = state,
                             onSwitchRealm = onSwitchRealm,
+                            onSwitchAccount = onSwitchAccount,
+                            onDeleteAccount = onDeleteAccount,
                             onLogin = onLogin,
                             onLogout = onLogout,
                             onOpenDetails = onOpenCredentialDetails,
@@ -121,7 +126,7 @@ fun HubApp(
                             onOverlayLocked = onOverlayLocked,
                         )
                         HubTab.Calls -> CallsScreen(state, onClearCalls, onRefreshCalls)
-                        HubTab.Rewards -> RewardsScreen(state, onCheckin, onRefreshBalance)
+                        HubTab.Rewards -> RewardsScreen(state, onCheckin, onCheckinAll, onRefreshBalance)
                     }
                 }
             }
@@ -130,6 +135,7 @@ fun HubApp(
         if (state.checkinMessage.isNotBlank()) {
             CheckinDialog(
                 message = state.checkinMessage,
+                items = state.checkinItems,
                 onDismiss = onDismissCheckin,
             )
         }

@@ -21,6 +21,7 @@ import com.wbhub.app.bridge.BridgeService
 import com.wbhub.app.bridge.BridgeSettings
 import com.wbhub.app.bridge.CallLogStore
 import com.wbhub.app.bridge.Notifications
+import com.wbhub.app.data.CheckinItem
 import com.wbhub.app.data.Login
 import com.wbhub.app.proto.CheckinOutcome
 import com.wbhub.app.proto.Credential
@@ -131,11 +132,14 @@ class MainActivity : ComponentActivity() {
                     state = state.copy(overlayLocked = locked)
                 },
                 onSwitchRealm = { region -> switchRealm(region) },
+                onSwitchAccount = { id -> switchAccount(id) },
+                onDeleteAccount = { id -> deleteAccount(id) },
                 onRequestOverlay = { requestOverlayPermission() },
                 onOpenCredentialDetails = { state = state.copy(showCredentialDrawer = true) },
                 onDismissCredentialDetails = { state = state.copy(showCredentialDrawer = false) },
                 onCopyField = { label, value -> copyToClipboard(value, "已复制 $label") },
                 onCheckin = { doCheckin() },
+                onCheckinAll = { checkinAllAccounts() },
                 onRefreshBalance = { loadBalance() },
                 onCopyEndpoint = { copyEndpoint() },
                 onCopyModel = { id -> copyToClipboard(id, "已复制模型名") },
@@ -204,17 +208,38 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    /** Re-reads the active build's credential and both slots' availability. */
+    /** Re-reads the account in use and every build's saved accounts. */
     private fun refreshCredential() {
         val region = store.activeRegion()
-        val cred = store.load(region)
+        val account = store.activeAccount()
         state = state.copy(
             realm = region,
-            credential = cred,
-            expiryText = cred?.let { formatExpiry(it) } ?: "",
-            hasCnCredential = store.has(Wire.Region.CN),
-            hasGlobalCredential = store.has(Wire.Region.GLOBAL),
+            credential = account?.toCredential(),
+            expiryText = account?.let { formatExpiry(it.toCredential()) } ?: "",
+            accounts = Wire.Region.entries.associateWith { store.accounts(it) },
+            activeAccountId = account?.id,
         )
+    }
+
+    /** Switches to another saved account inside the current build. */
+    private fun switchAccount(accountId: String) {
+        val region = state.realm
+        if (store.accounts(region).none { it.id == accountId }) return
+        store.selectAccount(region, accountId)
+        refreshCredential()
+        loadModels()
+        loadBalance()
+        state = state.copy(status = "已切换账号")
+    }
+
+    /** Removes one saved account. */
+    private fun deleteAccount(accountId: String) {
+        val region = state.realm
+        store.delete(region, accountId)
+        refreshCredential()
+        loadModels()
+        loadBalance()
+        state = state.copy(status = "已删除账号")
     }
 
     /**
@@ -335,6 +360,45 @@ class MainActivity : ComponentActivity() {
                 }
             }
             state = state.copy(status = "登录超时，请重试")
+        }
+    }
+
+    /**
+     * Checks in every account of the current build, one after another, and
+     * reports each outcome separately.
+     *
+     * Accounts run sequentially on purpose: the upstream is rate-limited, and a
+     * burst of concurrent check-ins would make some of them fail for reasons
+     * that have nothing to do with the account itself.
+     */
+    private fun checkinAllAccounts() {
+        val region = state.realm
+        val targets = state.accounts[region].orEmpty()
+        if (targets.isEmpty()) {
+            state = state.copy(checkinMessage = "${regionLabel(region)}还没有账号")
+            return
+        }
+        // With a single account the long press would do exactly what a tap does,
+        // so say so rather than repeating the same work behind a dialog.
+        if (targets.size == 1) {
+            doCheckin()
+            return
+        }
+        lifecycleScope.launch {
+            val results: List<CheckinItem> = withContext(Dispatchers.IO) {
+                withLoading(Loading.CHECKIN) {
+                    targets.map { account ->
+                        val outcome = runCatching { upstream.checkin(account.toCredential()) }
+                            .getOrElse { CheckinOutcome(false, it.message ?: "签到失败") }
+                        CheckinItem(label = account.label, ok = outcome.ok, message = outcome.message)
+                    }
+                }
+            }
+            state = state.copy(
+                checkinItems = results,
+                checkinMessage = "已为 ${results.size} 个账号完成签到",
+            )
+            loadBalance()
         }
     }
 

@@ -1,105 +1,291 @@
 package com.wbhub.app.proto
 
 import android.content.Context
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
 /**
- * Stores one credential per build and remembers which one is active.
+ * One saved account. A build can hold several of these, so identity is carried
+ * explicitly rather than inferred from the slot it sits in.
+ */
+data class SavedAccount(
+    val id: String,
+    val region: Wire.Region,
+    val nickname: String,
+    val uid: String,
+    val domain: String,
+    val accessToken: String,
+    val refreshToken: String,
+    val expiresAt: Long,
+    val enterpriseId: String? = null,
+    val source: String = "oauth",
+) {
+    /** Display label: the nickname, falling back to a short uid. */
+    val label: String get() = nickname.ifBlank { uid.take(8) }
+
+    fun toCredential(): Credential = Credential(
+        accessToken = accessToken,
+        refreshToken = refreshToken,
+        expiresAt = expiresAt,
+        domain = domain,
+        uid = uid,
+        nickname = nickname,
+        enterpriseId = enterpriseId,
+        source = source,
+    )
+}
+
+/**
+ * Stores the accounts of each build and remembers which one is in use.
  *
- * The two builds are separate account systems, so a user may legitimately hold
- * both at once and switch between them. Keeping them in separate slots — rather
- * than overwriting a single file — is what makes that switch instant, with no
- * re-login.
+ * Each build owns one file holding an array of accounts, so adding a second
+ * account never disturbs the first. The active selection is a pair of
+ * build and account id, persisted separately.
  */
 class CredentialStore(context: Context) {
 
     private val dir = context.filesDir
     private val prefs = context.getSharedPreferences("wb-hub", Context.MODE_PRIVATE)
 
-    fun fileFor(region: Wire.Region): File = File(dir, "wb-auth-${region.name.lowercase()}.json")
+    private fun fileFor(region: Wire.Region): File =
+        File(dir, "wb-auth-${region.name.lowercase()}.json")
 
-    /** Loads the stored credential for one build, or null when it has none. */
-    fun load(region: Wire.Region): Credential? {
+    // ------------------------------------------------------------------ //
+    // Accounts
+    // ------------------------------------------------------------------ //
+
+    /** Every account saved for one build. */
+    fun accounts(region: Wire.Region): List<SavedAccount> {
         val file = fileFor(region)
-        if (!file.exists()) return null
+        if (!file.exists()) return emptyList()
+        val text = runCatching { file.readText() }.getOrNull() ?: return emptyList()
         return runCatching {
-            val json = JSONObject(file.readText())
-            val token = json.optString("accessToken")
-            if (token.isEmpty()) return null
-            val stored = json.optLong("expiresAt", 0L)
-            Credential(
-                accessToken = token,
-                refreshToken = json.optString("refreshToken"),
-                // The login response may omit expiresAt; the token always
-                // carries exp, so the claim is the fallback source.
-                expiresAt = if (stored > 0) stored else expiryFromJwt(token),
-                domain = json.optString("domain").ifEmpty { defaultDomain(region) },
-                uid = json.optString("uid"),
-                nickname = json.optString("nickname"),
-                enterpriseId = json.optString("enterpriseId").ifEmpty { null },
-                source = json.optString("source", "oauth"),
-            ).takeIf { it.accessToken.isNotEmpty() }
-        }.getOrNull()
+            val array = JSONArray(text)
+            (0 until array.length()).mapNotNull { readAccount(array.optJSONObject(it), region) }
+        }.getOrElse {
+            // An older build wrote a single credential object at this path.
+            readLegacy(file, region)?.let { listOf(it) } ?: emptyList()
+        }
+    }
+
+    private fun readAccount(obj: JSONObject?, region: Wire.Region): SavedAccount? {
+        obj ?: return null
+        val token = obj.optString("accessToken")
+        if (token.isEmpty()) return null
+        val domain = obj.optString("domain").ifEmpty { defaultDomain(region) }
+        val uid = obj.optString("uid")
+        val stored = obj.optLong("expiresAt", 0L)
+        return SavedAccount(
+            id = obj.optString("id").ifEmpty { accountId(region, uid, domain) },
+            region = region,
+            nickname = obj.optString("nickname"),
+            uid = uid,
+            domain = domain,
+            accessToken = token,
+            refreshToken = obj.optString("refreshToken"),
+            expiresAt = if (stored > 0) stored else expiryFromJwt(token),
+            enterpriseId = obj.optString("enterpriseId").ifEmpty { null },
+            source = obj.optString("source", "oauth"),
+        )
     }
 
     /**
-     * Saves a credential into one build's slot.
-     *
-     * The slot and the credential's domain are kept consistent: the domain is
-     * what selects the upstream host, so a credential filed under one build but
-     * carrying the other's domain would send its token to the wrong service.
+     * Reads the single-object shape written before multi-account support, so an
+     * existing install does not lose its credential on upgrade.
      */
-    fun save(region: Wire.Region, credential: Credential) {
-        val normalized = if (Wire.regionOf(credential.domain) == region) {
-            credential
-        } else {
-            credential.copy(domain = defaultDomain(region))
+    private fun readLegacy(file: File, region: Wire.Region): SavedAccount? = runCatching {
+        val obj = JSONObject(file.readText())
+        val token = obj.optString("accessToken")
+        if (token.isEmpty()) return null
+        val domain = obj.optString("domain").ifEmpty { defaultDomain(region) }
+        val uid = obj.optString("uid")
+        val stored = obj.optLong("expiresAt", 0L)
+        SavedAccount(
+            id = accountId(region, uid, domain),
+            region = region,
+            nickname = obj.optString("nickname"),
+            uid = uid,
+            domain = domain,
+            accessToken = token,
+            refreshToken = obj.optString("refreshToken"),
+            expiresAt = if (stored > 0) stored else expiryFromJwt(token),
+            enterpriseId = obj.optString("enterpriseId").ifEmpty { null },
+            source = obj.optString("source", "oauth"),
+        )
+    }.getOrNull()
+
+    private fun writeAccounts(region: Wire.Region, accounts: List<SavedAccount>) {
+        val array = JSONArray()
+        accounts.forEach { account ->
+            array.put(
+                JSONObject().apply {
+                    put("id", account.id)
+                    put("accessToken", account.accessToken)
+                    put("refreshToken", account.refreshToken)
+                    put("expiresAt", account.expiresAt)
+                    put("domain", account.domain)
+                    put("uid", account.uid)
+                    put("nickname", account.nickname)
+                    put("enterpriseId", account.enterpriseId ?: "")
+                    put("source", account.source)
+                },
+            )
         }
-        val json = JSONObject().apply {
-            put("accessToken", normalized.accessToken)
-            put("refreshToken", normalized.refreshToken)
-            put("expiresAt", normalized.expiresAt)
-            put("domain", normalized.domain)
-            put("uid", normalized.uid)
-            put("nickname", normalized.nickname)
-            put("enterpriseId", normalized.enterpriseId ?: "")
-            put("source", normalized.source)
+        fileFor(region).writeText(array.toString())
+    }
+
+    /**
+     * Adds a credential, or replaces the one with the same account when it is
+     * already stored. Replacing rather than duplicating means signing in again
+     * renews a token instead of creating a confusing second entry.
+     */
+    fun save(region: Wire.Region, credential: Credential): SavedAccount {
+        val id = accountId(region, credential.uid, credential.domain, credential.accessToken)
+        val account = SavedAccount(
+            id = id,
+            region = region,
+            nickname = credential.nickname,
+            uid = credential.uid,
+            domain = credential.domain.ifEmpty { defaultDomain(region) },
+            accessToken = credential.accessToken,
+            refreshToken = credential.refreshToken,
+            expiresAt = credential.expiresAt,
+            enterpriseId = credential.enterpriseId,
+            source = credential.source,
+        )
+        val current = accounts(region).toMutableList()
+        val index = current.indexOfFirst { it.id == id }
+        if (index >= 0) current[index] = account else current.add(account)
+        writeAccounts(region, current)
+        setActive(region, id)
+        return account
+    }
+
+    /** Removes one account; the selection falls back to another one. */
+    fun delete(region: Wire.Region, accountId: String) {
+        val remaining = accounts(region).filterNot { it.id == accountId }
+        writeAccounts(region, remaining)
+        if (activeId(region) == accountId) {
+            remaining.firstOrNull()?.let { setActive(region, it.id) }
+                ?: clearActive(region)
         }
-        fileFor(region).writeText(json.toString(2))
-        // The daemon reads only the active account, so the mirror is refreshed
-        // whenever the stored credential that is in use changes.
-        if (activeRegion() == region) mirrorActiveForDaemon()
     }
 
     fun clear(region: Wire.Region) {
-        val file = fileFor(region)
-        if (file.exists()) file.delete()
+        fileFor(region).delete()
+        clearActive(region)
     }
 
     /**
-     * The build whose credential is currently in use.
-     *
-     * The stored preference is authoritative, including when that build has no
-     * credential yet: choosing a version is what the sign-in button then acts
-     * on, so a selection must never be silently overridden.
+     * Stable id for an account. The uid identifies a person, so it is preferred;
+     * a credential without one falls back to its domain plus a token digest so
+     * two such accounts still get distinct ids.
      */
+    private fun accountId(region: Wire.Region, uid: String, domain: String, accessToken: String = ""): String =
+        if (uid.isNotBlank()) "$region:${uid.take(8)}"
+        else "$region:${domain}:${accessToken.hashCode()}"
+
+    // ------------------------------------------------------------------ //
+    // Selection
+    // ------------------------------------------------------------------ //
+
+    /** The build currently in use. */
     fun activeRegion(): Wire.Region {
-        val stored = prefs.getString(KEY_ACTIVE, null) ?: return Wire.Region.CN
+        val stored = prefs.getString(KEY_ACTIVE_REGION, null) ?: return Wire.Region.CN
         return runCatching { Wire.Region.valueOf(stored) }.getOrDefault(Wire.Region.CN)
     }
 
     fun setActiveRegion(region: Wire.Region) {
-        prefs.edit().putString(KEY_ACTIVE, region.name).apply()
+        prefs.edit().putString(KEY_ACTIVE_REGION, region.name).apply()
         mirrorActiveForDaemon()
     }
 
     /**
-     * Publishes the active credential to the path the standalone daemon reads.
-     *
-     * The daemon runs under the shell uid and cannot open app-private files, so
-     * the copy is written to a world-readable location. Only the credential in
-     * use is mirrored, which keeps a non-active account's token out of it.
+     * Selects which saved account a build uses. The id is ignored when it does
+     * not belong to the build, so a stale selection cannot leak across.
+     */
+    /** Looks one account up by id, or null when it is no longer stored. */
+    fun account(region: Wire.Region, accountId: String): SavedAccount? =
+        accounts(region).firstOrNull { it.id == accountId }
+
+    fun selectAccount(region: Wire.Region, accountId: String) {
+        if (accounts(region).none { it.id == accountId }) return
+        setActive(region, accountId)
+    }
+
+    private fun activeId(region: Wire.Region): String? = prefs.getString("$KEY_ACTIVE_ID${region.name}", null)
+
+    private fun setActive(region: Wire.Region, accountId: String) {
+        prefs.edit().putString("$KEY_ACTIVE_ID${region.name}", accountId).apply()
+        mirrorActiveForDaemon()
+    }
+
+    private fun clearActive(region: Wire.Region) {
+        prefs.edit().remove("$KEY_ACTIVE_ID${region.name}").apply()
+    }
+
+    /** The account in use, or null when that build holds none. */
+    fun active(): Credential? = activeAccount()?.toCredential()
+
+    fun activeAccount(): SavedAccount? {
+        val region = activeRegion()
+        val list = accounts(region)
+        if (list.isEmpty()) return null
+        val selected = activeId(region)
+        return list.firstOrNull { it.id == selected } ?: list.first()
+    }
+
+    /** Whether a build has at least one saved account. */
+    fun has(region: Wire.Region): Boolean = accounts(region).isNotEmpty()
+
+    fun hasAny(): Boolean = Wire.Region.entries.any { has(it) }
+
+    // ------------------------------------------------------------------ //
+    // Refresh
+    // ------------------------------------------------------------------ //
+
+    fun needsRefresh(credential: Credential): Boolean {
+        if (credential.expiresAt <= 0) return true
+        val nowSeconds = System.currentTimeMillis() / 1000
+        return nowSeconds + REFRESH_MARGIN_SECONDS >= credential.expiresAt
+    }
+
+    /**
+     * Returns a credential safe to send, renewing first when it is inside the
+     * margin. The refreshed token is written back to the account it came from,
+     * so a switch back does not serve a stale token.
+     */
+    @Synchronized
+    fun resolve(renew: (Credential) -> Credential): Credential? {
+        val account = activeAccount() ?: return null
+        if (!needsRefresh(account.toCredential())) return account.toCredential()
+        return runCatching {
+            val renewed = renew(account.toCredential())
+            val region = account.region
+            val updated = accounts(region).map {
+                if (it.id == account.id) it.copy(
+                    accessToken = renewed.accessToken,
+                    refreshToken = renewed.refreshToken,
+                    expiresAt = renewed.expiresAt,
+                    domain = renewed.domain,
+                ) else it
+            }
+            writeAccounts(region, updated)
+            renewed
+        }.getOrElse {
+            // A failed renewal still returns the existing token when it has not
+            // yet expired, so an unreachable refresh endpoint does not take a
+            // working session down.
+            android.util.Log.w("WBHub", "token refresh failed; using existing token", it)
+            account.toCredential()
+        }
+    }
+
+    /**
+     * Publishes the account in use to the path a local consumer reads.
+     * Only the active account is mirrored, which keeps the others' tokens out of
+     * a world-readable location.
      */
     fun mirrorActiveForDaemon() {
         val target = File(DAEMON_AUTH_PATH)
@@ -120,47 +306,9 @@ class CredentialStore(context: Context) {
                 put("enterpriseId", credential.enterpriseId ?: "")
             }
             target.writeText(json.toString(2))
-            // The daemon runs as shell, so the file must be readable by it.
+            // A local consumer may run as another user, so the copy has to be
+            // readable by it.
             target.setReadable(true, false)
-        }
-    }
-
-    /** The credential currently in use, or null when that build has none. */
-    fun active(): Credential? = load(activeRegion())
-
-    /** Whether a build already holds a credential, for the switcher's labels. */
-    fun has(region: Wire.Region): Boolean = load(region) != null
-
-    /**
-     * Whether the access token is inside the renewal margin. A token without a
-     * known expiry is renewed rather than trusted.
-     */
-    fun needsRefresh(credential: Credential): Boolean {
-        if (credential.expiresAt <= 0) return true
-        val nowSeconds = System.currentTimeMillis() / 1000
-        return nowSeconds + REFRESH_MARGIN_SECONDS >= credential.expiresAt
-    }
-
-    /**
-     * Returns a credential safe to send, renewing first when it is inside the
-     * margin. Concurrent callers wait on the same lock instead of starting a
-     * second exchange.
-     */
-    @Synchronized
-    fun resolve(renew: (Credential) -> Credential): Credential? {
-        val region = activeRegion()
-        val credential = load(region) ?: return null
-        if (!needsRefresh(credential)) return credential
-        return runCatching {
-            val renewed = renew(credential)
-            save(region, renewed)
-            renewed
-        }.getOrElse {
-            // A failed renewal still returns the existing token when it has not
-            // yet expired, so an unreachable refresh endpoint does not take a
-            // working session down.
-            android.util.Log.w("WBHub", "token refresh failed; using existing token", it)
-            credential
         }
     }
 
@@ -180,12 +328,13 @@ class CredentialStore(context: Context) {
     }
 
     companion object {
-        /** Where the standalone daemon expects the active credential. */
+        /** Where a local consumer expects the account in use. */
         const val DAEMON_AUTH_PATH = "/data/local/tmp/wb-hub/wb-auth.json"
 
-        private const val KEY_ACTIVE = "active_region"
+        private const val KEY_ACTIVE_REGION = "active_region"
+        private const val KEY_ACTIVE_ID = "active_account_"
 
         /** Renew this long before the token actually expires. */
-        const val REFRESH_MARGIN_SECONDS = 5 * 60L
+        private const val REFRESH_MARGIN_SECONDS = 5 * 60L
     }
 }

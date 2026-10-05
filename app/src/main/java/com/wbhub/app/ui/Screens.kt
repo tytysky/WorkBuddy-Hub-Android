@@ -1,6 +1,8 @@
 package com.wbhub.app.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +23,8 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularWavyProgressIndicator
@@ -56,6 +60,7 @@ import com.wbhub.app.data.Login
 import com.wbhub.app.bridge.CallRecord
 import com.wbhub.app.bridge.UsageSummary
 import java.util.Locale
+import com.wbhub.app.data.CheckinItem
 import com.wbhub.app.proto.Wire
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -63,6 +68,8 @@ import com.wbhub.app.proto.Wire
 fun CredentialScreen(
     state: HubState,
     onSwitchRealm: (Wire.Region) -> Unit,
+    onSwitchAccount: (String) -> Unit,
+    onDeleteAccount: (String) -> Unit,
     onLogin: (Wire.Region) -> Unit,
     onLogout: () -> Unit,
     onOpenDetails: () -> Unit,
@@ -70,6 +77,7 @@ fun CredentialScreen(
     val region = state.realm
     val regionLabel = realmName(region)
     val active = state.credential
+    val saved = state.accounts[region].orEmpty()
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -93,7 +101,7 @@ fun CredentialScreen(
                     }
                     when {
                         active == null -> Text(
-                            "$regionLabel 还没有凭证，点下面的按钮登录。",
+                            "$regionLabel 还没有账号，点下面的按钮登录。",
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         else -> {
@@ -110,40 +118,56 @@ fun CredentialScreen(
             }
         }
 
-        // One control decides both which version to sign in to and which stored
-        // credential the bridge serves; splitting them let the two disagree.
+        // Build switch. The dot shows a build has at least one saved account.
         item {
             Text("版本", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(6.dp))
             SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                 Wire.Region.entries.forEachIndexed { index, item ->
-                    val stored = if (item == Wire.Region.GLOBAL) state.hasGlobalCredential else state.hasCnCredential
+                    val count = state.accounts[item].orEmpty().size
                     SegmentedButton(
                         selected = region == item,
                         onClick = { onSwitchRealm(item) },
                         shape = SegmentedButtonDefaults.itemShape(index = index, count = Wire.Region.entries.size),
                     ) {
-                        Text(if (stored) "${realmName(item)} ●" else realmName(item))
+                        Text(if (count > 0) "${realmName(item)} $count" else realmName(item))
                     }
                 }
             }
-            Text(
-                "● 表示该版本已保存凭证；切换后立即生效，无需重新登录。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 6.dp),
-            )
+        }
+
+        // Accounts of the selected build. Selecting one switches the credential
+        // the bridge serves, so switching never requires signing in again.
+        if (saved.isNotEmpty()) {
+            item {
+                Text(
+                    "$regionLabel 账号",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            items(saved, key = { it.id }) { account ->
+                val isActive = account.id == state.activeAccountId
+                AccountRow(
+                    label = account.label,
+                    uid = account.uid,
+                    isActive = isActive,
+                    onSelect = { onSwitchAccount(account.id) },
+                    onDelete = { onDeleteAccount(account.id) },
+                )
+            }
         }
 
         item {
             Button(onClick = { onLogin(region) }, modifier = Modifier.fillMaxWidth()) {
-                Text(if (active == null) "登录 $regionLabel" else "重新登录 $regionLabel")
+                Text(if (active == null) "登录 $regionLabel" else "添加 $regionLabel 账号")
             }
-            val anyCredential = state.hasCnCredential || state.hasGlobalCredential
-            if (anyCredential) {
-                Spacer(Modifier.height(4.dp))
+        }
+
+        if (state.hasAnyCredential) {
+            item {
                 TextButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) {
-                    Text("退出登录")
+                    Text("退出登录（清除全部账号）")
                 }
             }
         }
@@ -151,10 +175,69 @@ fun CredentialScreen(
         item {
             Text(
                 "说明：走官方 CLI 的 OAuth 流程，登录后可拿到 API token（网页 cookie 无法调用接口）。" +
-                    "国内版与国际版是两套独立账号体系，可以各登录一个并随时切换。",
+                    "国内版与国际版是两套独立账号体系，各自可以添加多个账号。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+/** One saved account, with a switch and a delete action. */
+@Composable
+private fun AccountRow(
+    label: String,
+    uid: String,
+    isActive: Boolean,
+    onSelect: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Card(
+        onClick = onSelect,
+        modifier = Modifier.fillMaxWidth(),
+        colors = if (isActive) {
+            CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+        } else {
+            CardDefaults.cardColors()
+        },
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (uid.isNotBlank()) {
+                    Text(
+                        uid.take(8),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (isActive) {
+                Text(
+                    "使用中",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(end = 8.dp),
+                )
+            }
+            IconButton(onClick = onDelete) {
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = "删除账号",
+                    tint = MaterialTheme.colorScheme.error,
+                )
+            }
         }
     }
 }
@@ -435,9 +518,14 @@ fun BridgeScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalFoundationApi::class)
 @Composable
-fun RewardsScreen(state: HubState, onCheckin: () -> Unit, onRefreshBalance: () -> Unit) {
+fun RewardsScreen(
+    state: HubState,
+    onCheckin: () -> Unit,
+    onCheckinAll: () -> Unit,
+    onRefreshBalance: () -> Unit,
+) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -450,7 +538,14 @@ fun RewardsScreen(state: HubState, onCheckin: () -> Unit, onRefreshBalance: () -
                     Button(
                         onClick = onCheckin,
                         enabled = state.loading != Loading.CHECKIN,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            // A long press runs the whole build's accounts, so a
+                            // user with several does not have to tap per account.
+                            .combinedClickable(
+                                onClick = onCheckin,
+                                onLongClick = onCheckinAll,
+                            ),
                     ) {
                         if (state.loading == Loading.CHECKIN) {
                             CircularWavyProgressIndicator(modifier = Modifier.size(18.dp))
@@ -597,6 +692,48 @@ fun HelpDialog(state: HubState, onDismiss: () -> Unit, onCopyEndpoint: () -> Uni
 internal fun realmName(region: Wire.Region): String =
     if (region == Wire.Region.GLOBAL) "国际版" else "国内版"
 
+
+/** Result of one check-in attempt, or a batch of them. */
+@Composable
+fun CheckinDialog(
+    message: String,
+    items: List<CheckinItem>,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (items.isEmpty()) "签到结果" else "批量签到结果") },
+        text = {
+            if (items.isEmpty()) {
+                Text(message)
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    item { Text(message, style = MaterialTheme.typography.bodyMedium) }
+                    items(items, key = { it.label }) { entry ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                if (entry.ok) "✓" else "✗",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = if (entry.ok) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.error,
+                                modifier = Modifier.width(20.dp),
+                            )
+                            Column {
+                                Text(entry.label, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    entry.message,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("好") } },
+    )
+}
 
 /** Confirms signing out, which discards every stored credential. */
 @Composable
