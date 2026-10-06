@@ -22,10 +22,21 @@ data class CallRecord(
     val completionTokens: Int = 0,
     val credits: Double = 0.0,
     val detail: String = "",
+    /**
+     * Address the call came from, empty for this device.
+     *
+     * Recorded because the endpoint can serve the local network, and "which
+     * peer ran this" is the first question when the account's usage does not
+     * match what this device did.
+     */
+    val sourceIp: String = "",
 ) {
     enum class Outcome { OK, FAILED }
 
     val totalTokens: Int get() = promptTokens + completionTokens
+
+    /** Whether the call arrived over the network rather than from this device. */
+    val isRemote: Boolean get() = sourceIp.isNotEmpty()
 
     val timeText: String
         get() = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
@@ -59,6 +70,7 @@ class CallLogStore(context: Context) {
                     completionTokens = item.optInt("completion"),
                     credits = item.optDouble("credits", 0.0),
                     detail = item.optString("detail"),
+                    sourceIp = item.optString("sourceIp"),
                 )
             }
         }.getOrDefault(emptyList())
@@ -85,6 +97,7 @@ class CallLogStore(context: Context) {
                         put("completion", entry.completionTokens)
                         put("credits", entry.credits)
                         put("detail", entry.detail)
+                        if (entry.sourceIp.isNotEmpty()) put("sourceIp", entry.sourceIp)
                     },
                 )
             }

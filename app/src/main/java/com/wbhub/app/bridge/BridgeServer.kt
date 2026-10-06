@@ -29,9 +29,20 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class BridgeServer(
     private val port: Int,
+    /** Key presented by clients on this device. */
     private val secret: String,
+    /** Key presented by peers on the local network. */
+    private val lanKey: String,
     private val credential: () -> Credential?,
     private val models: () -> List<String>,
+    /**
+     * Whether to serve the local network as well as this device.
+     *
+     * Loopback needs no trust decision; anything wider does, because the
+     * endpoint holds a credential and a key that a peer can observe travels
+     * in clear text over plain HTTP.
+     */
+    private val lanEnabled: Boolean = false,
     private val onCall: (CallRecord) -> Unit = {},
 ) {
 
@@ -48,15 +59,18 @@ class BridgeServer(
 
     fun start() {
         if (running.getAndSet(true)) return
+        // Bound to every interface when the local network is allowed, so the
+        // device's own address is reachable; loopback otherwise.
+        val bindAddress = if (lanEnabled) "0.0.0.0" else "127.0.0.1"
         val socket = try {
-            ServerSocket(port, 64, InetAddress.getByName("127.0.0.1"))
+            ServerSocket(port, 64, InetAddress.getByName(bindAddress))
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "cannot bind 127.0.0.1:$port", e)
+            android.util.Log.e(TAG, "cannot bind $bindAddress:$port", e)
             running.set(false)
             return
         }
         server = socket
-        android.util.Log.i(TAG, "bridge listening on 127.0.0.1:$port")
+        android.util.Log.i(TAG, "bridge listening on $bindAddress:$port")
         Thread {
             while (running.get()) {
                 val accepted = try {
@@ -109,21 +123,39 @@ class BridgeServer(
 
             val header = headers["authorization"].orEmpty().trim()
             val presented = if (header.startsWith("Bearer ", ignoreCase = true)) header.substring(7).trim() else header
-            if (presented != secret) {
+            // Which key is expected depends on where the request came from: a
+            // peer on the network authenticates with the LAN key, this device
+            // with its own. Keeping them apart means a leaked LAN key can be
+            // rotated without touching the local clients' configuration.
+            val fromLoopback = isLoopbackRequest(socket)
+            // Empty for this device: the local path is the assumed one, so a
+            // recorded address always means "someone else ran this".
+            val sourceIp = if (fromLoopback) "" else remoteAddressOf(socket)
+            if (sourceIp.isNotEmpty()) BridgeStatus.recordRemoteRequest()
+            val expected = when {
+                fromLoopback -> secret
+                lanEnabled -> lanKey
+                else -> null
+            }
+            if (expected == null || presented != expected) {
                 sendJson(output, 401, """{"error":{"message":"invalid api key","type":"unauthorized"}}""")
                 return
             }
 
-            // Inbound hardening. The loopback bind alone is not a trust
+            // Inbound hardening. The bind address alone is not a trust
             // boundary: any local process, or a page that re-resolves its own
-            // domain to 127.0.0.1, can reach the port. A browser-originated
-            // request must therefore name loopback in both Host and Origin, and
-            // a body must be JSON.
-            if (!hostIsLoopback(headers["host"])) {
+            // domain to the device's address, can reach the port. A
+            // browser-originated request must therefore name a host this server
+            // actually answers on, and a body must be JSON.
+            //
+            // With LAN access on, a peer legitimately addresses the device by
+            // its own address, so the check widens from loopback to "an address
+            // this device holds" rather than being dropped.
+            if (!hostIsAllowed(headers["host"])) {
                 sendJson(output, 403, """{"error":{"message":"host not allowed","type":"host_not_allowed"}}""")
                 return
             }
-            if (!originIsLoopback(headers["origin"])) {
+            if (!originIsAllowed(headers["origin"])) {
                 sendJson(output, 403, """{"error":{"message":"origin not allowed","type":"origin_not_allowed"}}""")
                 return
             }
@@ -144,7 +176,8 @@ class BridgeServer(
                     }
                     sendJson(output, 200, """{"object":"list","data":[$list]}""")
                 }
-                requestLine.startsWith("POST /v1/chat/completions") -> chat(output, body, headers["content-type"])
+                requestLine.startsWith("POST /v1/chat/completions") ->
+                    chat(output, body, headers["content-type"], sourceIp)
                 else -> sendJson(output, 404, """{"error":{"message":"not found","type":"not_found"}}""")
             }
         } catch (e: Exception) {
@@ -166,7 +199,7 @@ class BridgeServer(
         }
     }
 
-    private fun chat(output: OutputStream, body: String, contentType: String?) {
+    private fun chat(output: OutputStream, body: String, contentType: String?, sourceIp: String) {
         // The upstream rejects non-JSON, and allowing form posts would let a
         // simple cross-site request drive a paid model call.
         if (contentType == null || !contentType.trim().lowercase().startsWith("application/json")) {
@@ -198,6 +231,7 @@ class BridgeServer(
                         model = model,
                         outcome = CallRecord.Outcome.FAILED,
                         detail = "${result.kind.name.lowercase()}: $detail".take(120),
+                        sourceIp = sourceIp,
                     ),
                 )
                 sendJson(
@@ -217,6 +251,7 @@ class BridgeServer(
                             promptTokens = usage.prompt,
                             completionTokens = usage.completion,
                             credits = usage.credits,
+                            sourceIp = sourceIp,
                         ),
                     )
                 } finally {
@@ -345,19 +380,83 @@ class BridgeServer(
         return name
     }
 
-    /** Whether a Host header names the loopback interface. */
-    private fun hostIsLoopback(host: String?): Boolean {
+    /** Whether the accepted connection came from this device. */
+    private fun isLoopbackRequest(socket: Socket): Boolean = runCatching {
+        socket.inetAddress?.isLoopbackAddress ?: false
+    }.getOrDefault(false)
+
+    /** The peer's address, unmapped from its IPv4-in-IPv6 form when needed. */
+    private fun remoteAddressOf(socket: Socket): String = runCatching {
+        val host = socket.inetAddress?.hostAddress.orEmpty()
+        // A dual-stack accept reports an IPv4 peer as ::ffff:a.b.c.d, which is
+        // noise in a log line.
+        host.removePrefix("::ffff:")
+    }.getOrDefault("")
+
+    /**
+     * Whether a Host header names something this server answers on.
+     *
+     * Loopback always passes. With LAN access on, a peer addresses the device
+     * by an address it actually holds or by a name resolving to one, so those
+     * pass too; an arbitrary name still does not.
+     */
+    private fun hostIsAllowed(host: String?): Boolean {
         if (host.isNullOrBlank()) return false
-        return hostnameOf(host) in loopbackHosts
+        val name = hostnameOf(host).lowercase()
+        if (name in loopbackHosts) return true
+        if (!lanEnabled) return false
+        // A private address in the header is the normal case for a peer on the
+        // same network; anything else would be a name this device does not own.
+        return isPrivateAddress(name)
     }
 
-    /** Whether a browser-sent Origin names loopback; an absent Origin passes. */
-    private fun originIsLoopback(origin: String?): Boolean {
+    /**
+     * Whether a browser-sent Origin is allowed; an absent Origin passes.
+     *
+     * A browser only sends this for cross-origin calls, so its presence means
+     * a page is driving the request and it must be a page on this device or, in
+     * LAN mode, on a peer that could legitimately call the endpoint.
+     */
+    private fun originIsAllowed(origin: String?): Boolean {
         if (origin.isNullOrBlank()) return true
         return runCatching {
             val host = java.net.URI(origin).host?.lowercase()
-            host != null && (host in loopbackHosts || host == "::1")
+            when {
+                host == null -> false
+                host in loopbackHosts || host == "::1" -> true
+                lanEnabled -> isPrivateAddress(host)
+                else -> false
+            }
         }.getOrDefault(false)
+    }
+
+    /**
+     * Whether an address is inside a private range.
+     *
+     * The endpoint is only meant for the local network, so the check is the
+     * private blocks rather than "any address": a public name resolving here
+     * would mean the request came from somewhere it should not have.
+     */
+    private fun isPrivateAddress(host: String): Boolean {
+        if (host == "::1") return true
+        val parts = host.split(".")
+        if (parts.size != 4) {
+            // A hostname rather than a literal: accept it only if it resolves
+            // into a private range, which covers the "phone.local" case.
+            return runCatching {
+                InetAddress.getAllByName(host).any { isPrivateAddress(it.hostAddress.orEmpty()) }
+            }.getOrDefault(false)
+        }
+        val octets = parts.map { it.toIntOrNull() ?: return false }
+        return when {
+            octets[0] == 10 -> true
+            octets[0] == 192 && octets[1] == 168 -> true
+            // 172.16.0.0 - 172.31.255.255
+            octets[0] == 172 && octets[1] in 16..31 -> true
+            // Link-local, the range Android hands out for hotspots.
+            octets[0] == 169 && octets[1] == 254 -> true
+            else -> false
+        }
     }
 
     private fun statusText(code: Int): String = when (code) {

@@ -33,6 +33,12 @@ data class HubState(
     val bridgeRunning: Boolean = false,
     val port: Int = 8765,
     val secret: String = "wb-local",
+    /** Whether the endpoint also answers on the local network. */
+    val lanEnabled: Boolean = false,
+    /** Key peers on the network must present; separate from the local one. */
+    val lanKey: String = "wb-lan",
+    /** Addresses a peer on the same network can use, empty when none. */
+    val lanAddresses: List<String> = emptyList(),
     val status: String = "",
     val balance: Balance? = null,
     val checkinMessage: String = "",

@@ -42,6 +42,9 @@ class BridgeService : Service() {
     var port: Int = DEFAULT_PORT
         private set
 
+    /** Key clients must present; editable from the settings screen. */
+    private var apiKey: String = BridgeSettings.DEFAULT_API_KEY
+
     /** Whether the process is protected by a foreground notification. */
     @Volatile
     var foreground: Boolean = false
@@ -56,7 +59,7 @@ class BridgeService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         port = intent?.getIntExtra(EXTRA_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
-        val secret = intent?.getStringExtra(EXTRA_SECRET) ?: DEFAULT_SECRET
+        apiKey = BridgeSettings.DEFAULT_API_KEY
         promoteToForeground()
         acquireWakeLock()
         BridgeStatus.reset(port)
@@ -65,9 +68,14 @@ class BridgeService : Service() {
         if (bridge == null) {
             bridge = BridgeServer(
                 port = port,
-                secret = secret,
+                secret = apiKey,
+                lanKey = BridgeSettings.lanKey(this),
                 credential = { store.resolve { c -> upstream.refreshToken(c) } },
                 models = { models },
+                // Read from settings rather than the intent: toggling LAN access
+                // restarts the service, and the flag is one of the things it
+                // must pick up.
+                lanEnabled = BridgeSettings.lanEnabled(this),
                 onCall = { record -> callLog.append(record) },
             ).also { it.start() }
             scope.launch { refreshModelsLoop() }
@@ -142,6 +150,26 @@ class BridgeService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
+
+    /**
+     * Rebuilds the listener so a changed bind address takes effect.
+     *
+     * The socket cannot be re-bound in place, so the old one is dropped and a
+     * new server started; the stored credential and call log are untouched.
+     */
+    fun restartBridge() {
+        bridge?.stop()
+        bridge = BridgeServer(
+            port = port,
+            secret = apiKey,
+            lanKey = BridgeSettings.lanKey(this),
+            credential = { store.resolve { c -> upstream.refreshToken(c) } },
+            models = { models },
+            lanEnabled = BridgeSettings.lanEnabled(this),
+            onCall = { record -> callLog.append(record) },
+        ).also { it.start() }
+        BridgeStatus.reset(port)
+    }
 
     override fun onDestroy() {
         removeOverlay()

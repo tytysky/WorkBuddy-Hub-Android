@@ -75,6 +75,9 @@ fun HubApp(
     onRequestOverlay: () -> Unit,
     onOverlayOpacity: (Float) -> Unit,
     onOverlayLocked: (Boolean) -> Unit,
+    onSaveKey: (String) -> Unit,
+    onToggleLan: (Boolean) -> Unit,
+    onSaveLanKey: (String) -> Unit,
     onDismissCheckin: () -> Unit,
     showHelp: Boolean,
     onShowHelp: () -> Unit,
@@ -142,6 +145,9 @@ fun HubApp(
                             onRequestOverlay = onRequestOverlay,
                             onOverlayOpacity = onOverlayOpacity,
                             onOverlayLocked = onOverlayLocked,
+                            onSaveKey = onSaveKey,
+                            onToggleLan = onToggleLan,
+                            onSaveLanKey = onSaveLanKey,
                         )
                         HubTab.Agent -> AgentScreen(
                             agent = agent,

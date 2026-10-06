@@ -19,6 +19,9 @@ object BridgeStatus {
     /** Requests served since the bridge started. */
     val requestCount = AtomicInteger(0)
 
+    /** How many of those came from the network rather than this device. */
+    val remoteCount = AtomicInteger(0)
+
     @Volatile
     var lastRequest: String = ""
 
@@ -32,6 +35,7 @@ object BridgeStatus {
         running = true
         this.port = port
         requestCount.set(0)
+        remoteCount.set(0)
         lastRequest = ""
         lastError = ""
     }
@@ -39,6 +43,11 @@ object BridgeStatus {
     fun recordRequest(summary: String) {
         requestCount.incrementAndGet()
         lastRequest = summary
+    }
+
+    /** Records that a call arrived over the network. */
+    fun recordRemoteRequest() {
+        remoteCount.incrementAndGet()
     }
 
     fun recordError(message: String) {

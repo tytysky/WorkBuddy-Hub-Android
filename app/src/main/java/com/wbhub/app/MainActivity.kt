@@ -19,6 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
 import com.wbhub.app.bridge.BridgeService
 import com.wbhub.app.bridge.BridgeSettings
+import com.wbhub.app.bridge.LanAddresses
 import com.wbhub.app.bridge.CallLogStore
 import com.wbhub.app.bridge.Notifications
 import com.wbhub.app.data.CheckinItem
@@ -155,6 +156,12 @@ class MainActivity : ComponentActivity() {
             overlayOpacity = BridgeSettings.opacity(this),
             overlayLocked = BridgeSettings.locked(this),
         )
+        val lanOn = BridgeSettings.lanEnabled(this)
+        state = state.copy(
+            lanKey = BridgeSettings.lanKey(this),
+            lanEnabled = lanOn,
+            lanAddresses = if (lanOn) LanAddresses.current() else emptyList(),
+        )
         // Restored before the model catalogue arrives; a stored model that no
         // longer exists is replaced once the catalogue does.
         agent = agent.copy(
@@ -204,6 +211,24 @@ class MainActivity : ComponentActivity() {
                 onCheckin = { doCheckin() },
                 onCheckinAll = { checkinAllAccounts() },
                 onRefreshBalance = { loadBalance() },
+                onSaveKey = {
+                    // The local key is fixed, so there is nothing to save; the
+                    // handler stays so the screen compiles without a branch.
+                },
+                onToggleLan = { enabled ->
+                    BridgeSettings.setLanEnabled(this, enabled)
+                    state = state.copy(
+                        lanEnabled = enabled,
+                        lanAddresses = if (enabled) LanAddresses.current() else emptyList(),
+                    )
+                    service?.restartBridge()
+                },
+                onSaveLanKey = { key ->
+                    BridgeSettings.setLanKey(this, key)
+                    state = state.copy(lanKey = BridgeSettings.lanKey(this))
+                    service?.restartBridge()
+                    toast("已更新局域网密钥")
+                },
                 onStreakBonus = { runStreakBonus() },
                 onActivityReport = { runActivityReport() },
                 onTravel = { runTravel() },

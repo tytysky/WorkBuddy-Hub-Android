@@ -329,8 +329,14 @@ fun BridgeScreen(
     onRequestOverlay: () -> Unit,
     onOverlayOpacity: (Float) -> Unit,
     onOverlayLocked: (Boolean) -> Unit,
+    onSaveKey: (String) -> Unit,
+    onToggleLan: (Boolean) -> Unit,
+    onSaveLanKey: (String) -> Unit,
 ) {
     var portText by remember(state.port) { mutableStateOf(state.port.toString()) }
+    // The key field is local state so editing does not rewrite the running
+    // server's key on every keystroke.
+    var lanKeyText by remember(state.lanKey) { mutableStateOf(state.lanKey) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -395,6 +401,60 @@ fun BridgeScreen(
                             FilledTonalButton(onClick = onCopyEndpoint) { Text("复制接入信息") }
                             FilledTonalButton(onClick = onStop) { Text("停止") }
                         }
+                    }
+                }
+            }
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("局域网访问", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                if (state.lanEnabled) "同一网络下的设备可以调用" else "仅本机可用",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(checked = state.lanEnabled, onCheckedChange = onToggleLan)
+                    }
+                    if (state.lanEnabled) {
+                        val address = state.lanAddresses.firstOrNull()
+                        if (address == null) {
+                            Text(
+                                "未检测到局域网地址，请连接 Wi-Fi 后重试。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        } else {
+                            Text("局域网地址", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                "http://$address:${state.port}/v1",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            Text("局域网密钥", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            OutlinedTextField(
+                                value = lanKeyText,
+                                onValueChange = { lanKeyText = it },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                FilledTonalButton(
+                                    onClick = { onSaveLanKey(lanKeyText) },
+                                    enabled = lanKeyText.isNotBlank() && lanKeyText != state.lanKey,
+                                ) { Text("保存") }
+                                FilledTonalButton(onClick = { lanKeyText = randomKey() }) { Text("随机生成") }
+                            }
+                        }
+                        Text(
+                            "⚠ 仅在可信网络下开启。密钥以明文 HTTP 传输，" +
+                                "同网段的其他人可能窃取，公共 Wi-Fi 下请关闭。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
                     }
                 }
             }
@@ -944,6 +1004,15 @@ private fun CallRow(record: CallRecord) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            if (record.isRemote) {
+                // Only shown for network calls: this device is the default and
+                // labelling every local row would bury the ones that are not.
+                Text(
+                    "来自局域网 ${record.sourceIp}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
         }
     }
 }
@@ -957,3 +1026,12 @@ private fun formatCredits(value: Double): String {
         String.format(Locale.US, "%.2f", value)
     }
 }
+
+/**
+ * A fresh key for the endpoint.
+ *
+ * Random rather than memorable: it is pasted into a client once and never
+ * typed, and a guessable key is the only thing between a peer and the account.
+ */
+private fun randomKey(): String =
+    "wb-" + (1..24).map { "0123456789abcdef"[java.security.SecureRandom().nextInt(16)] }.joinToString("")
