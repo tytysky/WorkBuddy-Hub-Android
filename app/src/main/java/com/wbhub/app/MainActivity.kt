@@ -21,6 +21,7 @@ import com.wbhub.app.bridge.BridgeService
 import com.wbhub.app.bridge.BridgeSettings
 import com.wbhub.app.bridge.LanAddresses
 import com.wbhub.app.bridge.CallLogStore
+import com.wbhub.app.bridge.CallRecord
 import com.wbhub.app.bridge.Notifications
 import com.wbhub.app.data.CheckinItem
 import com.wbhub.app.data.Login
@@ -734,6 +735,9 @@ class MainActivity : ComponentActivity() {
 
         agentScope.launch {
             val history = agentHistory()
+            // Each model call inside a run is charged on its own, so usage is
+            // collected per turn and written to the call log there rather than
+            // summed once at the end.
             val transcript = withContext(Dispatchers.IO) {
                 agentClient.run(
                     credential = credential,
@@ -746,6 +750,11 @@ class MainActivity : ComponentActivity() {
                     approval = agent.approval,
                     ask = { summary -> requestApproval(summary) },
                 ) { event ->
+                    when (event) {
+                        is AgentClient.Event.Usage -> recordAgentCall(credential, event)
+                        is AgentClient.Event.Failure -> recordAgentFailure(credential, event.message)
+                        else -> Unit
+                    }
                     // The client calls this from its own thread and cannot
                     // suspend, so the update is posted to the main thread and
                     // the worker moves on without waiting for it.
@@ -755,7 +764,50 @@ class MainActivity : ComponentActivity() {
             agent = agent.copy(running = false)
             lastAgentTranscript = transcript
             persistAgentSession()
+            // The page polls the log while it is visible, but writing here means
+            // it is already current whenever the user switches to it.
+            mainHandler.post { loadCalls() }
         }
+    }
+
+    /**
+     * Writes one built-in chat turn to the call history.
+     *
+     * The endpoint's own calls are recorded by the service; this is the other
+     * spender of the same account, so leaving it out would make the totals
+     * disagree with the account's actual usage.
+     */
+    private fun recordAgentCall(credential: Credential, usage: AgentClient.Event.Usage) {
+        callLog.append(
+            CallRecord(
+                timestamp = System.currentTimeMillis(),
+                model = agent.modelId,
+                outcome = CallRecord.Outcome.OK,
+                promptTokens = usage.promptTokens,
+                completionTokens = usage.completionTokens,
+                credits = usage.credits,
+                accountId = credential.accountId,
+                accountLabel = credential.nickname,
+                multiplier = state.models.firstOrNull { it.id == agent.modelId }?.multiplier ?: -1.0,
+                source = CallRecord.Source.AGENT,
+            ),
+        )
+    }
+
+    /** Records a turn that failed before it produced usage. */
+    private fun recordAgentFailure(credential: Credential, detail: String) {
+        callLog.append(
+            CallRecord(
+                timestamp = System.currentTimeMillis(),
+                model = agent.modelId,
+                outcome = CallRecord.Outcome.FAILED,
+                detail = detail.take(120),
+                accountId = credential.accountId,
+                accountLabel = credential.nickname,
+                multiplier = state.models.firstOrNull { it.id == agent.modelId }?.multiplier ?: -1.0,
+                source = CallRecord.Source.AGENT,
+            ),
+        )
     }
 
     /**
@@ -868,6 +920,9 @@ class MainActivity : ComponentActivity() {
             is AgentClient.Event.ToolEnd ->
                 entries += AgentEntry(AgentEntry.Role.TOOL, "◀ ${event.name}：${event.summary}")
             is AgentClient.Event.Failure -> entries += AgentEntry(AgentEntry.Role.ERROR, event.message)
+            // Usage is consumed where the call log is written; the transcript has
+            // nothing to show for it.
+            is AgentClient.Event.Usage -> Unit
             AgentClient.Event.Done -> Unit
         }
         agent = agent.copy(entries = entries)

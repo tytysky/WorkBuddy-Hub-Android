@@ -33,6 +33,16 @@ class AgentClient {
         data class ToolStart(val name: String) : Event()
         data class ToolEnd(val name: String, val ok: Boolean, val summary: String) : Event()
         data class Failure(val message: String) : Event()
+
+        /**
+         * Token and credit totals for one model call.
+         *
+         * Reported per turn rather than per conversation: a run makes one
+         * upstream call per round, and each of those is charged separately, so
+         * collapsing them into a single figure would lose what was spent.
+         */
+        data class Usage(val promptTokens: Int, val completionTokens: Int, val credits: Double) : Event()
+
         object Done : Event()
     }
 
@@ -158,6 +168,20 @@ class AgentClient {
                 readFrames(reader) { data ->
                     if (data == "[DONE]") return@readFrames false
                     val chunk = runCatching { JSONObject(data) }.getOrNull() ?: return@readFrames true
+
+                    // The usage block arrives on its own frame near the end, and
+                    // only once per call, so it is read here rather than being
+                    // reconstructed from the text.
+                    chunk.optJSONObject("usage")?.let { usage ->
+                        onEvent(
+                            Event.Usage(
+                                promptTokens = usage.optInt("prompt_tokens", 0),
+                                completionTokens = usage.optInt("completion_tokens", 0),
+                                credits = usage.optDouble("credit", 0.0),
+                            ),
+                        )
+                    }
+
                     val delta = chunk.optJSONArray("choices")
                         ?.optJSONObject(0)
                         ?.optJSONObject("delta") ?: return@readFrames true

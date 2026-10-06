@@ -1166,6 +1166,16 @@ private fun CallRow(record: CallRecord, models: List<HubModel>) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            // Which caller spent the credit. Shown for the built-in chat only:
+            // the endpoint is what this page is primarily a record of, and
+            // labelling every one of its rows would bury the exceptions.
+            if (record.source == CallRecord.Source.AGENT) {
+                Text(
+                    record.source.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
             if (record.isRemote) {
                 // Only shown for network calls: this device is the default and
                 // labelling every local row would bury the ones that are not.

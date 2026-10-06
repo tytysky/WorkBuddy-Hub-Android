@@ -46,7 +46,29 @@ data class CallRecord(
      * behind a stale number.
      */
     val multiplier: Double = -1.0,
+    /**
+     * Where the call came from.
+     *
+     * The endpoint and the built-in chat both spend the same account's credit,
+     * so their calls belong in one history; the label is what lets a reader tell
+     * which of the two produced a given line.
+     */
+    val source: Source = Source.BRIDGE,
 ) {
+    /** Who initiated the call. */
+    enum class Source(val label: String) {
+        /** A client calling the local OpenAI-compatible endpoint. */
+        BRIDGE("API 平台"),
+
+        /** The agent page talking to the model directly. */
+        AGENT("内置对话"),
+        ;
+
+        companion object {
+            fun fromName(value: String?): Source =
+                entries.firstOrNull { it.name == value } ?: BRIDGE
+        }
+    }
     enum class Outcome { OK, FAILED }
 
     val totalTokens: Int get() = promptTokens + completionTokens
@@ -239,6 +261,7 @@ class CallLogStore(private val context: Context) {
                     accountId = item.optString("accountId"),
                     accountLabel = item.optString("accountLabel"),
                     multiplier = item.optDouble("multiplier", -1.0),
+                    source = CallRecord.Source.fromName(item.optString("source")),
                 )
             }
         }.getOrDefault(emptyList())
@@ -291,6 +314,7 @@ class CallLogStore(private val context: Context) {
                     if (entry.accountId.isNotEmpty()) put("accountId", entry.accountId)
                     if (entry.accountLabel.isNotEmpty()) put("accountLabel", entry.accountLabel)
                     if (entry.multiplier >= 0) put("multiplier", entry.multiplier)
+                    if (entry.source != CallRecord.Source.BRIDGE) put("source", entry.source.name)
                 },
             )
         }
