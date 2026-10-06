@@ -16,6 +16,7 @@ object BridgeSettings {
     private const val KEY_X = "x"
     private const val KEY_Y = "y"
     private const val KEY_API_KEY = "api_key"
+    private const val KEY_LAN_KEY = "lan_key"
     private const val KEY_LAN = "lan_enabled"
     private const val KEY_STEALTH = "stealth_enabled"
     private const val KEY_DOT_X = "dot_x"
@@ -26,6 +27,7 @@ object BridgeSettings {
     private const val KEY_DOT_ALPHA = "dot_alpha"
     private const val KEY_BURN_IN = "burn_in_enabled"
     private const val KEY_BURN_IN_INTERVAL = "burn_in_interval_ms"
+    private const val KEY_CALL_LIMIT = "call_log_limit"
 
     /**
      * Whether the panel is replaced by a small dot.
@@ -114,6 +116,23 @@ object BridgeSettings {
             ).apply()
     }
 
+    /**
+     * How many call records to keep.
+     *
+     * A user setting rather than a constant: the records are stored on the
+     * device and their size is the user's to trade against how far back they
+     * want to look.
+     */
+    fun callLogLimit(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CALL_LIMIT, DEFAULT_CALL_LIMIT)
+            .coerceIn(MIN_CALL_LIMIT, MAX_CALL_LIMIT)
+
+    fun setCallLogLimit(context: Context, value: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putInt(KEY_CALL_LIMIT, value.coerceIn(MIN_CALL_LIMIT, MAX_CALL_LIMIT)).apply()
+    }
+
     /** A default that reads as "working" against most backgrounds. */
     const val DEFAULT_DOT_COLOR = 0xFF34C759.toInt()
     const val DEFAULT_DOT_SIZE = 12
@@ -125,6 +144,16 @@ object BridgeSettings {
     const val MIN_BURN_IN_INTERVAL_MS = 1_000L
     const val MAX_BURN_IN_INTERVAL_MS = 30 * 60 * 1000L
     const val DEFAULT_BURN_IN_INTERVAL_MS = 2 * 60 * 1000L
+
+    /**
+     * Bounds on the call history.
+     *
+     * The upper end is what a few hundred kilobytes per thousand records buys:
+     * large enough to look back weeks, small enough not to be a hidden cost.
+     */
+    const val MIN_CALL_LIMIT = 100
+    const val MAX_CALL_LIMIT = 100_000
+    const val DEFAULT_CALL_LIMIT = 500
 
     /**
      * The key local clients present. Fixed: it is written into configs on this
@@ -141,14 +170,14 @@ object BridgeSettings {
      */
     fun lanKey(context: Context): String =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_API_KEY, "")
+            .getString(KEY_LAN_KEY, "")
             ?.takeIf { it.isNotBlank() }
             ?: DEFAULT_LAN_KEY
 
     fun setLanKey(context: Context, value: String) {
         val trimmed = value.trim()
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putString(KEY_API_KEY, trimmed).apply()
+            .edit().putString(KEY_LAN_KEY, trimmed).apply()
     }
 
     const val DEFAULT_LAN_KEY = "wb-lan"

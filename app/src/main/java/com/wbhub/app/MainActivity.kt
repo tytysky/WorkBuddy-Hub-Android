@@ -196,6 +196,19 @@ class MainActivity : ComponentActivity() {
                 onLogin = { region -> startLogin(region) },
                 onLogout = { state = state.copy(showLogoutConfirm = true) },
                 onClearCalls = { clearCalls() },
+                onOpenCallSettings = { state = state.copy(showCallSettings = true) },
+                onDismissCallSettings = { state = state.copy(showCallSettings = false) },
+                onCallLimitChange = { limit ->
+                    BridgeSettings.setCallLogLimit(this, limit)
+                    // Trimming now rather than at the next call, so the size
+                    // shown reflects the limit that was just chosen.
+                    callLog.trimToLimit()
+                    state = state.copy(
+                        callLogLimit = BridgeSettings.callLogLimit(this),
+                        calls = callLog.load(),
+                        callLogBytes = callLog.estimatedBytes(BridgeSettings.callLogLimit(this)),
+                    )
+                },
                 onRefreshCalls = { loadCalls() },
                 onOverlayOpacity = { value ->
                     BridgeSettings.setOpacity(this, value)
@@ -1000,14 +1013,25 @@ class MainActivity : ComponentActivity() {
 
     /** Reloads the recorded calls, newest last. */
     private fun loadCalls() {
-        state = state.copy(calls = callLog.load())
+        val limit = BridgeSettings.callLogLimit(this)
+        state = state.copy(
+            calls = callLog.load(),
+            callTotals = callLog.totals(),
+            callLogLimit = limit,
+            callLogBytes = callLog.estimatedBytes(limit),
+        )
     }
 
-    /** Discards the whole call history. */
+    /**
+     * Discards the visible history.
+     *
+     * The running totals survive: this empties a list, not the record of what
+     * the endpoint has served.
+     */
     private fun clearCalls() {
         callLog.clear()
         loadCalls()
-        toast("调用记录已清空")
+        toast("调用记录已清空（累计统计保留）")
     }
 
     /** Signs the user out everywhere, discarding both stored credentials. */

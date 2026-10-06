@@ -11,6 +11,7 @@ import com.wbhub.app.agent.AgentStore
 import com.wbhub.app.agent.AgentTools
 import com.wbhub.app.agent.ApprovalMode
 import com.wbhub.app.bridge.CallRecord
+import com.wbhub.app.bridge.CallTotals
 import com.wbhub.app.bridge.DotShape
 import com.wbhub.app.data.CheckinItem
 import com.wbhub.app.proto.Balance
@@ -52,6 +53,14 @@ data class HubState(
     val showLogoutConfirm: Boolean = false,
     val overlayAllowed: Boolean = false,
     val calls: List<CallRecord> = emptyList(),
+    /** Running totals across every call served, independent of the list cap. */
+    val callTotals: CallTotals = CallTotals(),
+    /** How many call records to keep. */
+    val callLogLimit: Int = 500,
+    /** Whether the call-record settings sheet is open. */
+    val showCallSettings: Boolean = false,
+    /** Approximate size the history occupies at the current limit. */
+    val callLogBytes: Long = 0,
     val overlayOpacity: Float = 0.94f,
     val overlayLocked: Boolean = false,
     /** Whether the overlay is a non-interactive dot instead of the panel. */

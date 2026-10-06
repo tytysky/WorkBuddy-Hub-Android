@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material.icons.filled.Delete
@@ -42,6 +43,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -55,6 +57,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,8 +67,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.wbhub.app.data.Login
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 import com.wbhub.app.bridge.CallRecord
-import com.wbhub.app.bridge.UsageSummary
 import com.wbhub.app.bridge.DotShape
 import java.util.Locale
 import com.wbhub.app.data.CheckinItem
@@ -947,7 +950,12 @@ fun LogoutDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
 
 /** Call history with the usage totals derived from it. */
 @Composable
-fun CallsScreen(state: HubState, onClear: () -> Unit, onRefresh: () -> Unit) {
+fun CallsScreen(
+    state: HubState,
+    onClear: () -> Unit,
+    onRefresh: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
     // Calls arrive from the service without the UI being told, so the page
     // reloads while it is on screen rather than only when it is opened.
     LaunchedEffect(Unit) {
@@ -956,7 +964,25 @@ fun CallsScreen(state: HubState, onClear: () -> Unit, onRefresh: () -> Unit) {
             kotlinx.coroutines.delay(2000L)
         }
     }
-    val summary = UsageSummary.of(state.calls)
+    // The summary reports what the endpoint has served in total, not what the
+    // list below happens to still hold: the list is capped, so deriving the
+    // figures from it would make them fall as older calls age out.
+    val totals = state.callTotals
+    // The pull is a manual reload of what is already on disk; the periodic poll
+    // above keeps the list live, and this exists so a user who has just made a
+    // call does not have to wait for the next tick.
+    var refreshing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    PullToRefreshBox(
+        isRefreshing = refreshing,
+        onRefresh = {
+            refreshing = true
+            scope.launch {
+                onRefresh()
+                refreshing = false
+            }
+        },
+    ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -975,16 +1001,19 @@ fun CallsScreen(state: HubState, onClear: () -> Unit, onRefresh: () -> Unit) {
                         if (state.calls.isNotEmpty()) {
                             TextButton(onClick = onClear) { Text("清空") }
                         }
+                        IconButton(onClick = onOpenSettings) {
+                            Icon(Icons.Default.Settings, contentDescription = "记录设置")
+                        }
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        StatCell("成功调用", summary.calls.toString())
-                        StatCell("失败", summary.failures.toString())
-                        StatCell("消耗积分", formatCredits(summary.credits))
+                        StatCell("成功调用", totals.calls.toString())
+                        StatCell("失败", totals.failures.toString())
+                        StatCell("消耗积分", formatCredits(totals.credits))
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        StatCell("输入 Tokens", summary.promptTokens.toString())
-                        StatCell("输出 Tokens", summary.completionTokens.toString())
-                        StatCell("合计 Tokens", summary.totalTokens.toString())
+                        StatCell("输入 Tokens", totals.promptTokens.toString())
+                        StatCell("输出 Tokens", totals.completionTokens.toString())
+                        StatCell("合计 Tokens", totals.totalTokens.toString())
                     }
                 }
             }
@@ -1011,6 +1040,7 @@ fun CallsScreen(state: HubState, onClear: () -> Unit, onRefresh: () -> Unit) {
             }
         }
     }
+    }
 }
 
 @Composable
@@ -1033,12 +1063,23 @@ private fun StatCell(label: String, value: String) {
 @Composable
 private fun CallRow(record: CallRecord) {
     val failed = record.outcome == CallRecord.Outcome.FAILED
-    Card(modifier = Modifier.fillMaxWidth()) {
+    // A tinted card rather than coloured text alone: the outcome is the first
+    // thing a reader wants from a list, and colour carries it faster than a
+    // word does. The tint is kept faint so the figures stay readable.
+    val accent = if (failed) MaterialTheme.colorScheme.error else SUCCESS_GREEN
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = accent.copy(alpha = if (failed) 0.14f else 0.10f),
+        ),
+    ) {
         Column(Modifier.padding(12.dp), Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     record.model.ifEmpty { "(未知模型)" },
                     style = MaterialTheme.typography.titleSmall,
+                    color = accent,
+                    fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -1076,6 +1117,15 @@ private fun CallRow(record: CallRecord) {
         }
     }
 }
+
+/**
+ * Colour for a successful call.
+ *
+ * Not taken from the scheme: the theme's tertiary and secondary slots already
+ * mean something else on this screen, and a status colour that shifts with the
+ * theme would stop being a status colour.
+ */
+private val SUCCESS_GREEN = Color(0xFF2E7D32)
 
 /** Credit figures are multipliers, so trailing zeros are trimmed. */
 private fun formatCredits(value: Double): String {
@@ -1275,3 +1325,104 @@ private val DOT_PALETTE = listOf(
     0xFFBF5AF2.toInt(), // purple
     0xFF8E8E93.toInt(), // grey
 )
+
+/**
+ * Settings for the call history, shown as a bottom sheet from the calls page.
+ *
+ * The record count is a real trade the user is making — history against storage
+ * on their own device — so the sheet states the resulting size rather than
+ * presenting the number as a free choice.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CallSettingsSheet(
+    state: HubState,
+    onDismiss: () -> Unit,
+    onLimitChange: (Int) -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 20.dp, bottom = 40.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                "记录设置",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+
+            Text(
+                "保留条数 ${state.callLogLimit}",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Slider(
+                value = callLimitSliderValue(state.callLogLimit),
+                onValueChange = { onLimitChange(sliderToCallLimit(it)) },
+                valueRange = 0f..1f,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("100", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("10 万", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            Text(
+                "约占用 ${formatBytes(state.callLogBytes)}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                "调用记录保存在本机，不会上传。条数越多，占用空间越大；" +
+                    "超出上限时最旧的记录会被自动删除。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            HorizontalDivider()
+
+            Text(
+                "用量统计是累计值，不受保留条数影响，清空记录也不会重置。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * Maps the record limit onto a slider.
+ *
+ * Linear would spend most of its travel above ten thousand, where the setting
+ * is a storage decision rather than a viewing one; logarithmic puts the range
+ * most people actually choose in the first half.
+ */
+private fun callLimitSliderValue(limit: Int): Float {
+    val min = 100.0
+    val max = 100_000.0
+    val clamped = limit.coerceIn(100, 100_000).toDouble()
+    return (kotlin.math.ln(clamped / min) / kotlin.math.ln(max / min)).toFloat().coerceIn(0f, 1f)
+}
+
+private fun sliderToCallLimit(value: Float): Int {
+    val min = 100.0
+    val max = 100_000.0
+    val raw = min * Math.pow(max / min, value.toDouble())
+    // Rounded to a readable step: the exact count is not a meaningful choice,
+    // and a slider that reports 47318 invites precision that does not exist.
+    val step = when {
+        raw < 1_000 -> 50
+        raw < 10_000 -> 100
+        raw < 50_000 -> 500
+        else -> 1_000
+    }
+    return ((raw / step).roundToInt() * step).coerceIn(100, 100_000)
+}
+
+/** Human-readable size for the history estimate. */
+private fun formatBytes(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "${bytes / 1024} KB"
+    else -> String.format(Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0)
+}

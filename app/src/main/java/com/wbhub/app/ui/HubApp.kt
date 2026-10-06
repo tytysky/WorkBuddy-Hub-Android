@@ -41,6 +41,9 @@ fun HubApp(
     onLogin: (Wire.Region) -> Unit,
     onLogout: () -> Unit,
     onClearCalls: () -> Unit,
+    onOpenCallSettings: () -> Unit,
+    onDismissCallSettings: () -> Unit,
+    onCallLimitChange: (Int) -> Unit,
     onRefreshCalls: () -> Unit,
     onSwitchRealm: (Wire.Region) -> Unit,
     onSwitchAccount: (String) -> Unit,
@@ -182,7 +185,12 @@ fun HubApp(
                             onDeleteSession = onAgentDeleteSession,
                             onAnswerApproval = onAgentAnswerApproval,
                         )
-                        HubTab.Calls -> CallsScreen(state, onClearCalls, onRefreshCalls)
+                        HubTab.Calls -> CallsScreen(
+                            state = state,
+                            onClear = onClearCalls,
+                            onRefresh = onRefreshCalls,
+                            onOpenSettings = onOpenCallSettings,
+                        )
                         HubTab.Rewards -> RewardsScreen(
                             state = state,
                             onCheckin = onCheckin,
@@ -210,6 +218,13 @@ fun HubApp(
                 state = state,
                 onDismiss = onDismissCredentialDetails,
                 onCopy = onCopyField,
+            )
+        }
+        if (state.showCallSettings) {
+            CallSettingsSheet(
+                state = state,
+                onDismiss = onDismissCallSettings,
+                onLimitChange = onCallLimitChange,
             )
         }
         if (showHelp) {

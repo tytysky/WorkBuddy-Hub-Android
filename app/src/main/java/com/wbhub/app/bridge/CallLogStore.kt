@@ -43,16 +43,101 @@ data class CallRecord(
 }
 
 /**
+ * Running totals across every call this install has ever served.
+ *
+ * Kept apart from the record list on purpose: the list is capped because a view
+ * cannot grow forever, while a total that lost its oldest entries would be
+ * wrong rather than merely short. Clearing the list is therefore a display
+ * action and leaves these alone.
+ */
+data class CallTotals(
+    val calls: Int = 0,
+    val failures: Int = 0,
+    val promptTokens: Long = 0,
+    val completionTokens: Long = 0,
+    val credits: Double = 0.0,
+) {
+    val totalTokens: Long get() = promptTokens + completionTokens
+
+    /** Folds one finished call into the running figures. */
+    fun plus(record: CallRecord): CallTotals = copy(
+        calls = if (record.outcome == CallRecord.Outcome.OK) calls + 1 else calls,
+        failures = if (record.outcome == CallRecord.Outcome.FAILED) failures + 1 else failures,
+        promptTokens = promptTokens + record.promptTokens,
+        completionTokens = completionTokens + record.completionTokens,
+        credits = credits + record.credits,
+    )
+}
+
+/**
  * Append-only history of bridge calls, kept in a small JSON file.
  *
  * Bounded on purpose: this is a convenience log, and an unbounded one would grow
  * without limit on a device that runs for weeks. The oldest entries are dropped
  * once the cap is reached.
  */
-class CallLogStore(context: Context) {
+class CallLogStore(private val context: Context) {
 
     private val file = File(context.filesDir, "wb-call-log.json")
+    private val totalsFile = File(context.filesDir, "wb-call-totals.json")
     private val lock = Any()
+
+    /** Reads the running totals; an absent file means nothing has been served. */
+    fun totals(): CallTotals {
+        if (!totalsFile.exists()) return CallTotals()
+        return runCatching {
+            val json = JSONObject(totalsFile.readText())
+            CallTotals(
+                calls = json.optInt("calls"),
+                failures = json.optInt("failures"),
+                promptTokens = json.optLong("prompt"),
+                completionTokens = json.optLong("completion"),
+                credits = json.optDouble("credits", 0.0),
+            )
+        }.getOrDefault(CallTotals())
+    }
+
+    /**
+     * Discards the running totals.
+     *
+     * Separate from clearing the list: the list is a view, the totals are a
+     * record, and a user tidying the view is not asking to lose the record.
+     */
+    fun clearTotals() {
+        synchronized(lock) { runCatching { totalsFile.delete() } }
+    }
+
+    /**
+     * Trims the file to the current limit.
+     *
+     * Called when the setting is lowered, so the effect is immediate rather
+     * than deferred until the next call arrives.
+     */
+    fun trimToLimit() {
+        synchronized(lock) {
+            val limit = BridgeSettings.callLogLimit(context)
+            val existing = load()
+            if (existing.size <= limit) return
+            write(existing.subList(existing.size - limit, existing.size))
+        }
+    }
+
+    /**
+     * Roughly how large the history would be at [count] records.
+     *
+     * Measured from what is already stored rather than assumed, so the figure
+     * shown reflects this device's own records instead of an average.
+     */
+    fun estimatedBytes(count: Int): Long {
+        val existing = load()
+        val perRecord = if (existing.isEmpty()) {
+            // Nothing to measure yet; a record is a few hundred bytes of JSON.
+            DEFAULT_BYTES_PER_RECORD
+        } else {
+            file.length().coerceAtLeast(1L) / existing.size
+        }
+        return perRecord * count
+    }
 
     fun load(): List<CallRecord> {
         if (!file.exists()) return emptyList()
@@ -80,57 +165,70 @@ class CallLogStore(context: Context) {
         synchronized(lock) {
             val existing = load().toMutableList()
             existing.add(record)
-            // Keep the newest entries; the log is a convenience, not a ledger.
-            val trimmed = if (existing.size > MAX_ENTRIES) {
-                existing.subList(existing.size - MAX_ENTRIES, existing.size).toList()
+            // The cap is read per append so a change takes effect immediately.
+            val limit = BridgeSettings.callLogLimit(context)
+            val trimmed = if (existing.size > limit) {
+                existing.subList(existing.size - limit, existing.size).toList()
             } else {
                 existing
             }
-            val array = JSONArray()
-            trimmed.forEach { entry ->
-                array.put(
+            write(trimmed)
+            // The totals are folded in here rather than derived from the file
+            // afterwards, because the file only holds the newest entries and a
+            // total recomputed from it would shrink as they age out.
+            runCatching {
+                val next = totals().plus(record)
+                totalsFile.writeText(
                     JSONObject().apply {
-                        put("ts", entry.timestamp)
-                        put("model", entry.model)
-                        put("outcome", entry.outcome.name)
-                        put("prompt", entry.promptTokens)
-                        put("completion", entry.completionTokens)
-                        put("credits", entry.credits)
-                        put("detail", entry.detail)
-                        if (entry.sourceIp.isNotEmpty()) put("sourceIp", entry.sourceIp)
-                    },
+                        put("calls", next.calls)
+                        put("failures", next.failures)
+                        put("prompt", next.promptTokens)
+                        put("completion", next.completionTokens)
+                        put("credits", next.credits)
+                    }.toString(),
                 )
             }
-            runCatching { file.writeText(array.toString()) }
         }
     }
 
+    /** Replaces the stored records. */
+    private fun write(records: List<CallRecord>) {
+        val array = JSONArray()
+        records.forEach { entry ->
+            array.put(
+                JSONObject().apply {
+                    put("ts", entry.timestamp)
+                    put("model", entry.model)
+                    put("outcome", entry.outcome.name)
+                    put("prompt", entry.promptTokens)
+                    put("completion", entry.completionTokens)
+                    put("credits", entry.credits)
+                    put("detail", entry.detail)
+                    if (entry.sourceIp.isNotEmpty()) put("sourceIp", entry.sourceIp)
+                },
+            )
+        }
+        runCatching { file.writeText(array.toString()) }
+    }
+
+    /**
+     * Empties the visible history.
+     *
+     * The running totals are left as they are: this clears a list the user is
+     * looking at, not the record of what the endpoint has served.
+     */
     fun clear() {
         synchronized(lock) { runCatching { file.delete() } }
     }
 
     private companion object {
-        const val MAX_ENTRIES = 500
-    }
-}
-
-/** Totals derived from the recorded calls, for the summary row. */
-data class UsageSummary(
-    val calls: Int,
-    val failures: Int,
-    val promptTokens: Int,
-    val completionTokens: Int,
-    val credits: Double,
-) {
-    val totalTokens: Int get() = promptTokens + completionTokens
-
-    companion object {
-        fun of(records: List<CallRecord>): UsageSummary = UsageSummary(
-            calls = records.count { it.outcome == CallRecord.Outcome.OK },
-            failures = records.count { it.outcome == CallRecord.Outcome.FAILED },
-            promptTokens = records.sumOf { it.promptTokens },
-            completionTokens = records.sumOf { it.completionTokens },
-            credits = records.sumOf { it.credits },
-        )
+        /**
+         * Used before anything has been recorded.
+         *
+         * A record is a timestamp, a model name, a few counters and usually an
+         * empty detail field; the JSON overhead dominates, which is why the
+         * estimate is only ever a rough one.
+         */
+        const val DEFAULT_BYTES_PER_RECORD = 200L
     }
 }
