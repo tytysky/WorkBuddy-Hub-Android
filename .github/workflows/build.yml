@@ -53,12 +53,12 @@ jobs:
           fi
           mkdir -p keystore
           echo "$KEYSTORE_BASE64" | base64 -d > keystore/wb-hub.jks
-          cat > keystore.properties <<EOF
-          storeFile=keystore/wb-hub.jks
-          storePassword=$KEYSTORE_PASSWORD
-          keyAlias=$KEY_ALIAS
-          keyPassword=$KEY_PASSWORD
-          EOF
+          {
+            echo "storeFile=keystore/wb-hub.jks"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > keystore.properties
 
       - name: Build debug
         run: ./gradlew assembleDebug --no-daemon

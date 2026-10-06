@@ -18,21 +18,29 @@ android {
         versionName = "0.2.0"
     }
 
-    // Release signing reads keystore.properties, which is git-ignored. When it is
-    // absent the release build falls back to no signing so a fresh clone still
-    // compiles; a signed artifact requires the properties file to be present.
+    // Release signing reads keystore.properties, which is git-ignored. A clone
+    // without signing material still builds: the signing config is only created
+    // and attached when every input is present, because attaching an empty one
+    // makes :app:packageRelease fail with "missing required property
+    // storeFile" rather than producing an unsigned APK.
     val keystoreProperties = Properties()
     rootProject.file("keystore.properties").takeIf { it.exists() }?.inputStream()?.use {
         keystoreProperties.load(it)
     }
 
+    val releaseStore = keystoreProperties.getProperty("storeFile")
+        ?.takeIf { it.isNotBlank() }
+        ?.let { rootProject.file(it) }
+        ?.takeIf { it.exists() }
+    val hasReleaseSigning = releaseStore != null &&
+        !keystoreProperties.getProperty("storePassword").isNullOrBlank() &&
+        !keystoreProperties.getProperty("keyAlias").isNullOrBlank() &&
+        !keystoreProperties.getProperty("keyPassword").isNullOrBlank()
+
     signingConfigs {
-        create("release") {
-            // A missing keystore.properties leaves these empty, and the build
-            // then falls back to an unsigned artifact rather than failing.
-            val store = keystoreProperties.getProperty("storeFile")
-            if (!store.isNullOrBlank() && rootProject.file(store).exists()) {
-                storeFile = rootProject.file(store)
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = releaseStore
                 storePassword = keystoreProperties.getProperty("storePassword")
                 keyAlias = keystoreProperties.getProperty("keyAlias")
                 keyPassword = keystoreProperties.getProperty("keyPassword")
@@ -47,10 +55,11 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            // The config only exists when keystore.properties was found, so a
-            // clone without signing material still produces an unsigned build
-            // instead of failing the build.
-            signingConfig = signingConfigs.getByName("release")
+            // Attached only when the keystore was found; otherwise the release
+            // artifact stays unsigned instead of failing the build.
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
