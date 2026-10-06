@@ -133,6 +133,8 @@ class BridgeService : Service() {
             overlay.dotSize = BridgeSettings.dotSize(this)
             overlay.dotShape = BridgeSettings.dotShape(this)
             overlay.dotAlpha = BridgeSettings.dotAlpha(this)
+            overlay.burnInEnabled = BridgeSettings.burnInEnabled(this)
+            overlay.burnInIntervalMs = BridgeSettings.burnInIntervalMs(this)
             overlay.show()
         }
         overlayRef = overlay

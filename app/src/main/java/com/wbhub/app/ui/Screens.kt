@@ -345,6 +345,8 @@ fun BridgeScreen(
     onDotSize: (Int) -> Unit,
     onDotShape: (DotShape) -> Unit,
     onDotAlpha: (Float) -> Unit,
+    onBurnIn: (Boolean) -> Unit,
+    onBurnInInterval: (Long) -> Unit,
     onAdjustDot: (Boolean) -> Unit,
 ) {
     var portText by remember(state.port) { mutableStateOf(state.port.toString()) }
@@ -568,6 +570,8 @@ fun BridgeScreen(
                                 onDotSize = onDotSize,
                                 onDotShape = onDotShape,
                                 onDotAlpha = onDotAlpha,
+                                onBurnIn = onBurnIn,
+                                onBurnInInterval = onBurnInInterval,
                             )
                         }
                     }
@@ -1106,6 +1110,8 @@ private fun DotSettings(
     onDotSize: (Int) -> Unit,
     onDotShape: (DotShape) -> Unit,
     onDotAlpha: (Float) -> Unit,
+    onBurnIn: (Boolean) -> Unit,
+    onBurnInInterval: (Long) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1191,6 +1197,72 @@ private fun DotSettings(
             valueRange = 0f..1f,
             modifier = Modifier.fillMaxWidth(),
         )
+
+        HorizontalDivider()
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("防烧屏", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "圆点会在紧邻的八个位置之间轮换，每个位置都不与上一个重合，" +
+                        "让像素有机会熄灭。基准位置不变。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = state.burnInEnabled, onCheckedChange = onBurnIn)
+        }
+
+        if (state.burnInEnabled) {
+            Text(
+                "间隔 ${formatInterval(state.burnInIntervalMs)}",
+                style = MaterialTheme.typography.labelMedium,
+            )
+            Slider(
+                value = burnInSliderValue(state.burnInIntervalMs),
+                onValueChange = { onBurnInInterval(sliderToInterval(it)) },
+                valueRange = 0f..1f,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                "最短 1 秒，最长 30 分钟。间隔越短，单个像素点亮的时间越少，" +
+                    "但圆点看起来会更活跃。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * Maps the interval onto a slider that feels linear.
+ *
+ * The useful range spans 1 second to 30 minutes, and a linear slider would
+ * spend most of its travel above ten minutes, where the setting barely matters.
+ * A logarithmic mapping puts the short intervals, which are the ones worth
+ * tuning, in the first half.
+ */
+private fun burnInSliderValue(ms: Long): Float {
+    val min = 1_000.0
+    val max = 30 * 60 * 1000.0
+    val clamped = ms.coerceIn(1_000L, 30L * 60 * 1000).toDouble()
+    return (kotlin.math.ln(clamped / min) / kotlin.math.ln(max / min)).toFloat().coerceIn(0f, 1f)
+}
+
+private fun sliderToInterval(value: Float): Long {
+    val min = 1_000.0
+    val max = 30 * 60 * 1000.0
+    val ms = min * Math.pow(max / min, value.toDouble())
+    // Rounded to whole seconds: sub-second precision is not meaningful here.
+    return ((ms / 1000).roundToInt() * 1000L).coerceIn(1_000L, 30L * 60 * 1000)
+}
+
+private fun formatInterval(ms: Long): String {
+    val seconds = ms / 1000
+    return when {
+        seconds < 60 -> "${seconds} 秒"
+        seconds % 60 == 0L -> "${seconds / 60} 分钟"
+        else -> "${seconds / 60} 分 ${seconds % 60} 秒"
     }
 }
 

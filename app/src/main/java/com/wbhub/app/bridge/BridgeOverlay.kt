@@ -97,17 +97,64 @@ class BridgeOverlay(
      */
     var dotAlpha: Float = BridgeSettings.DEFAULT_DOT_ALPHA
 
-    /** Rebuilds the dot when its appearance changes. */
+    /** Whether the dot cycles through neighbouring positions. */
+    var burnInEnabled: Boolean = true
+
+    /** How long it stays in one position. */
+    var burnInIntervalMs: Long = BridgeSettings.DEFAULT_BURN_IN_INTERVAL_MS
+
+    /**
+     * Where the dot sits when it is not displaced: the user's own position.
+     *
+     * Every step is measured from here rather than from the last position, so a
+     * round of moves cannot accumulate into a drift away from where it was put.
+     */
+    private var anchorX = 0
+    private var anchorY = 0
+
+    /** Index into [OFFSETS] of the position currently held. */
+    private var offsetIndex = 0
+
+    private val burnInTicker = object : Runnable {
+        override fun run() {
+            stepBurnIn()
+            handler.postDelayed(this, burnInIntervalMs)
+        }
+    }
+
+    /**
+     * Applies a change to the dot's appearance.
+     *
+     * Only a size or shape change rebuilds the window: those change the view's
+     * geometry. Colour and opacity are repainted in place, because rebuilding
+     * happens by removing and re-adding the window, and doing that on every
+     * frame of a slider drag reads as a flicker rather than a fade.
+     */
     fun refreshAppearance(color: Int, size: Int, shape: DotShape, alpha: Float) {
-        val changed = color != dotColor || size != dotSize || shape != dotShape || alpha != dotAlpha
+        val needsRebuild = size != dotSize || shape != dotShape
+        val needsRepaint = color != dotColor || alpha != dotAlpha
         dotColor = color
         dotSize = size
         dotShape = shape
         dotAlpha = alpha
-        if (changed && stealthMode && view != null) {
-            hide()
-            show()
+        if (!stealthMode || view == null) return
+        when {
+            needsRebuild -> {
+                hide()
+                show()
+            }
+            needsRepaint -> paintDot(1f)
         }
+        // An invisible dot burns nothing in, so the cycle is pointless; it also
+        // stops and restarts when the opacity changes either way.
+        scheduleBurnIn()
+    }
+
+    /** Applies a change to the burn-in settings. */
+    fun refreshBurnIn(enabled: Boolean, intervalMs: Long) {
+        burnInEnabled = enabled
+        burnInIntervalMs = intervalMs
+        scheduleBurnIn()
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -119,6 +166,16 @@ class BridgeOverlay(
     private lateinit var detailView: TextView
     private lateinit var logView: TextView
     private lateinit var root: LinearLayout
+
+    /**
+     * The dot's view and its drawable, kept so a blink can repaint the shape
+     * instead of fading the whole view.
+     *
+     * The colour already carries the user's opacity, so fading the view as well
+     * would multiply the two and leave the dot darker after every blink.
+     */
+    private var dotView: View? = null
+    private var dotDrawable: GradientDrawable? = null
 
     /** Whether the panel shows its request line; tapping toggles it. */
     private var expanded = true
@@ -134,6 +191,14 @@ class BridgeOverlay(
     private var lastSeenCount = 0
 
     /**
+     * The running blink, so a new one can replace it instead of stacking.
+     *
+     * Held rather than left to the animator's own lifetime: two animators on
+     * the same property fight, and whichever finishes last decides the alpha.
+     */
+    private var blink: android.animation.ValueAnimator? = null
+
+    /**
      * Flashes the dot when a call has been served.
      *
      * The dot reports nothing on its own, so a blink is the only signal it can
@@ -142,19 +207,51 @@ class BridgeOverlay(
      */
     private fun blinkIfCalled() {
         val count = BridgeStatus.requestCount.get()
+        // A restart zeroes the counter. Reading that as a change would blink on
+        // a counter that was reset rather than on a call that arrived, so the
+        // baseline follows the counter down instead.
+        if (count < lastSeenCount) {
+            lastSeenCount = count
+            return
+        }
         if (count == lastSeenCount) return
         lastSeenCount = count
-        val dot = view ?: return
-        // Fade relative to the configured opacity so the blink reads the same
-        // whether the dot is opaque or faint; at zero there is nothing to fade
-        // and the blink rises towards half opacity instead, so the signal is
-        // still there for someone who chose an invisible dot.
-        val peak = if (dotAlpha <= 0.01f) 0.5f else dotAlpha
-        val trough = if (dotAlpha <= 0.01f) 0f else dotAlpha * 0.15f
-        val animation = android.animation.ObjectAnimator
-            .ofFloat(dot, "alpha", peak, trough, peak)
-            .apply { duration = BLINK_MS }
-        animation.start()
+        if (dotView == null) return
+        // The blink repaints the shape at a lower alpha and back. Fading the
+        // view instead would compound with the alpha baked into the colour, and
+        // every blink would end slightly darker than it started.
+        blink?.cancel()
+        blink = android.animation.ValueAnimator.ofFloat(1f, BLINK_DIM, 1f).apply {
+            duration = BLINK_MS
+            addUpdateListener { animator ->
+                paintDot((animator.animatedValue as Float))
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    // Restoring explicitly covers cancellation, which skips the
+                    // final update and would otherwise leave it dimmed.
+                    paintDot(1f)
+                }
+            })
+            start()
+        }
+    }
+
+    /** Redraws the dot at [factor] times its configured opacity. */
+    private fun paintDot(factor: Float) {
+        val drawable = dotDrawable ?: return
+        // A dot set to invisible still has to be able to signal, so its blink
+        // rises towards visible instead of fading from somewhere it never was.
+        val base = if (dotAlpha <= 0.01f) 0.5f else dotAlpha
+        val color = withAlpha(dotColor, (base * factor).coerceIn(0f, 1f))
+        when (dotShape) {
+            DotShape.FILLED -> drawable.setColor(color)
+            DotShape.RING -> {
+                drawable.setColor(Color.TRANSPARENT)
+                drawable.setStroke(dp(if (dotSize >= 20) 3 else 2), color)
+            }
+        }
+        dotView?.invalidate()
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -211,10 +308,17 @@ class BridgeOverlay(
         // dot drags only while it is being adjusted.
         if (!stealthMode || adjusting) attachDrag()
         view = root
+        // The dot starts at the user's position and walks from there; the round
+        // is reset on every rebuild so a re-added window does not resume at an
+        // arbitrary corner of the ring.
+        anchorX = lp.x
+        anchorY = lp.y
+        offsetIndex = 0
         if (!stealthMode) refresh()
         // A dot is polled faster: its only job is to notice a call, and a
         // one-second poll would delay the blink by up to that much.
         handler.postDelayed(ticker, if (stealthMode) DOT_REFRESH_MS else REFRESH_MS)
+        scheduleBurnIn()
     }
 
     /** The full status panel. */
@@ -279,10 +383,11 @@ class BridgeOverlay(
                 }
             }
         }
+        dotDrawable = drawable
         return View(context).apply {
             background = drawable
             layoutParams = LinearLayout.LayoutParams(side, side)
-        }
+        }.also { dotView = it }
     }
 
     /** Drag to move, tap to toggle the detail line. */
@@ -334,6 +439,11 @@ class BridgeOverlay(
                     } else if (!locked || (stealthMode && adjusting)) {
                         if (stealthMode) {
                             BridgeSettings.setDotPosition(context, lp.x, lp.y)
+                            // The user just chose a new home position, so the
+                            // ring recentres on it rather than on the old one.
+                            anchorX = lp.x
+                            anchorY = lp.y
+                            offsetIndex = 0
                         } else {
                             BridgeSettings.setPosition(context, lp.x, lp.y)
                         }
@@ -352,8 +462,103 @@ class BridgeOverlay(
         refresh()
     }
 
+    /** The running move animation, so a new step can replace it. */
+    private var moveAnimator: android.animation.ValueAnimator? = null
+
+    /**
+     * Moves the dot one step around the anchor.
+     *
+     * The sequence is a fixed walk around the ring rather than a random pick:
+     * a random one can land on the same side twice in a row, which would leave
+     * that cluster of pixels lit for two intervals while others stay dark.
+     */
+    private fun stepBurnIn() {
+        if (!stealthMode || adjusting) return
+        if (!burnInEnabled) return
+        val lp = params ?: return
+        val root = view ?: return
+
+        val step = dp(dotSize)
+        // Eight directions around a ring whose radius is wider than the dot.
+        //
+        // Eight evenly spaced points on a circle of radius D would put two
+        // neighbouring ones only 0.77 D apart, since the chord between them is
+        // 2·D·sin(22.5°), which is closer than the dot is wide. The radius is
+        // therefore 1.32 D: the smallest value that keeps every pair of
+        // positions — adjacent or diagonal — at least a full diameter apart.
+        val radius = (step * RING_RADIUS_FACTOR).roundToInt()
+        val diagonal = (radius / SQRT_2).roundToInt()
+        offsetIndex = (offsetIndex + 1) % OFFSETS.size
+        val candidate = OFFSETS[offsetIndex]
+        val x = anchorX + if (candidate.first == 0) 0 else candidate.first * (if (candidate.second == 0) radius else diagonal)
+        val y = anchorY + if (candidate.second == 0) 0 else candidate.second * (if (candidate.first == 0) radius else diagonal)
+
+        // Moving past an edge would push part of the dot off screen, so that
+        // step is skipped: the position counter has already advanced, which
+        // means the next interval tries the following direction instead of
+        // hammering the same blocked one.
+        if (!fitsOnScreen(x, y)) return
+
+        if (burnInIntervalMs <= FADE_THRESHOLD_MS) {
+            // At a one-second interval a fade would take most of the time and
+            // the dot would appear to strobe rather than to sit somewhere.
+            lp.x = x
+            lp.y = y
+            runCatching { windowManager?.updateViewLayout(root, lp) }
+        } else {
+            moveSmoothly(root, lp, x, y)
+        }
+    }
+
+    /** Fades out, repositions, fades back in. */
+    private fun moveSmoothly(root: View, lp: WindowManager.LayoutParams, x: Int, y: Int) {
+        moveAnimator?.cancel()
+        moveAnimator = android.animation.ValueAnimator.ofFloat(1f, 0f, 1f).apply {
+            duration = FADE_MS * 2
+            addUpdateListener { animator ->
+                val value = animator.animatedValue as Float
+                root.alpha = value
+                // Reposition at the darkest point, so the jump is not seen.
+                if (value <= FADE_SWAP_AT && (lp.x != x || lp.y != y)) {
+                    lp.x = x
+                    lp.y = y
+                    runCatching { windowManager?.updateViewLayout(root, lp) }
+                }
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    root.alpha = 1f
+                }
+            })
+            start()
+        }
+    }
+
+    /** Whether a position keeps the whole dot inside the screen. */
+    private fun fitsOnScreen(x: Int, y: Int): Boolean {
+        val metrics = context.resources.displayMetrics
+        val side = dp(dotSize)
+        return x >= 0 && y >= 0 &&
+            x + side <= metrics.widthPixels && y + side <= metrics.heightPixels
+    }
+
+    /** Starts the cycle, if the current mode and settings call for it. */
+    private fun scheduleBurnIn() {
+        handler.removeCallbacks(burnInTicker)
+        if (!stealthMode || !burnInEnabled || dotAlpha <= 0.01f) return
+        handler.postDelayed(burnInTicker, burnInIntervalMs)
+    }
+
     fun hide() {
         handler.removeCallbacks(ticker)
+        handler.removeCallbacks(burnInTicker)
+        moveAnimator?.cancel()
+        moveAnimator = null
+        // A blink that outlives its view would keep animating a detached view
+        // and, worse, its end-listener would write to it after the window is
+        // gone.
+        blink?.cancel()
+        blink = null
         val v = view ?: return
         runCatching { windowManager?.removeView(v) }
         view = null
@@ -415,5 +620,51 @@ class BridgeOverlay(
         const val REFRESH_MS = 1000L
         const val DOT_REFRESH_MS = 250L
         const val BLINK_MS = 450L
+
+        /** How far the blink dips; a full fade reads as a disappearance. */
+        const val BLINK_DIM = 0.2f
+
+        /** Half of a fade-out/fade-in pair. */
+        const val FADE_MS = 150L
+
+        /** Below this the position is swapped while the dot is at its dimmest. */
+        const val FADE_SWAP_AT = 0.2f
+
+        /**
+         * An interval at or under this skips the fade.
+         *
+         * Two fades take 300 ms, which at a one-second interval is most of the
+         * time the dot has in one place.
+         */
+        const val FADE_THRESHOLD_MS = 1_500L
+
+        /** 1/sqrt(2), for splitting a diagonal into its two components. */
+        const val SQRT_2 = 1.4142135f
+
+        /**
+         * Ring radius as a multiple of the dot's diameter.
+         *
+         * 1/(2·sin(22.5°)) ≈ 1.3066 is the exact minimum for eight evenly
+         * spaced positions to stay a diameter apart; the extra margin absorbs
+         * the pixel rounding below.
+         */
+        const val RING_RADIUS_FACTOR = 1.32f
+
+        /**
+         * The ring of positions, walked in order.
+         *
+         * Diagonals come between the axes so consecutive steps are adjacent on
+         * screen rather than jumping across the anchor.
+         */
+        val OFFSETS = listOf(
+            0 to -1,
+            1 to -1,
+            1 to 0,
+            1 to 1,
+            0 to 1,
+            -1 to 1,
+            -1 to 0,
+            -1 to -1,
+        )
     }
 }

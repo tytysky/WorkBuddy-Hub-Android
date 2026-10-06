@@ -60,6 +60,10 @@ data class HubState(
     val dotSize: Int = 12,
     val dotShape: DotShape = DotShape.FILLED,
     val dotAlpha: Float = 1f,
+    /** Whether the dot cycles positions to spread the lit pixels. */
+    val burnInEnabled: Boolean = true,
+    /** How long the dot stays in one position, in milliseconds. */
+    val burnInIntervalMs: Long = 120_000L,
     /** Whether the dot is temporarily movable. */
     val adjustingDot: Boolean = false,
     val realm: Wire.Region = Wire.Region.CN,

@@ -84,6 +84,8 @@ fun HubApp(
     onDotSize: (Int) -> Unit,
     onDotShape: (DotShape) -> Unit,
     onDotAlpha: (Float) -> Unit,
+    onBurnIn: (Boolean) -> Unit,
+    onBurnInInterval: (Long) -> Unit,
     onAdjustDot: (Boolean) -> Unit,
     onDismissCheckin: () -> Unit,
     showHelp: Boolean,
@@ -160,6 +162,8 @@ fun HubApp(
                             onDotSize = onDotSize,
                             onDotShape = onDotShape,
                             onDotAlpha = onDotAlpha,
+                            onBurnIn = onBurnIn,
+                            onBurnInInterval = onBurnInInterval,
                             onAdjustDot = onAdjustDot,
                         )
                         HubTab.Agent -> AgentScreen(

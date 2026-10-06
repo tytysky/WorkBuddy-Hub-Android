@@ -24,6 +24,8 @@ object BridgeSettings {
     private const val KEY_DOT_SIZE = "dot_size"
     private const val KEY_DOT_SHAPE = "dot_shape"
     private const val KEY_DOT_ALPHA = "dot_alpha"
+    private const val KEY_BURN_IN = "burn_in_enabled"
+    private const val KEY_BURN_IN_INTERVAL = "burn_in_interval_ms"
 
     /**
      * Whether the panel is replaced by a small dot.
@@ -83,12 +85,46 @@ object BridgeSettings {
             .edit().putFloat(KEY_DOT_ALPHA, value.coerceIn(0f, 1f)).apply()
     }
 
+    /**
+     * Whether the dot cycles through neighbouring positions.
+     *
+     * A static shape lights the same pixels continuously, which on an OLED panel
+     * is exactly the condition that leaves a permanent mark. Moving it by at
+     * least its own diameter gives every pixel a turn being dark.
+     */
+    fun burnInEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_BURN_IN, true)
+
+    fun setBurnInEnabled(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_BURN_IN, value).apply()
+    }
+
+    /** How long the dot stays in one position. */
+    fun burnInIntervalMs(context: Context): Long =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getLong(KEY_BURN_IN_INTERVAL, DEFAULT_BURN_IN_INTERVAL_MS)
+            .coerceIn(MIN_BURN_IN_INTERVAL_MS, MAX_BURN_IN_INTERVAL_MS)
+
+    fun setBurnInIntervalMs(context: Context, value: Long) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putLong(
+                KEY_BURN_IN_INTERVAL,
+                value.coerceIn(MIN_BURN_IN_INTERVAL_MS, MAX_BURN_IN_INTERVAL_MS),
+            ).apply()
+    }
+
     /** A default that reads as "working" against most backgrounds. */
     const val DEFAULT_DOT_COLOR = 0xFF34C759.toInt()
     const val DEFAULT_DOT_SIZE = 12
     const val MIN_DOT_SIZE = 6
     const val MAX_DOT_SIZE = 40
     const val DEFAULT_DOT_ALPHA = 1f
+
+    /** One second is enough to be a stress option; two minutes is the default. */
+    const val MIN_BURN_IN_INTERVAL_MS = 1_000L
+    const val MAX_BURN_IN_INTERVAL_MS = 30 * 60 * 1000L
+    const val DEFAULT_BURN_IN_INTERVAL_MS = 2 * 60 * 1000L
 
     /**
      * The key local clients present. Fixed: it is written into configs on this

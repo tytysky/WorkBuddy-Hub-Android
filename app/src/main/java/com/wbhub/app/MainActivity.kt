@@ -166,6 +166,8 @@ class MainActivity : ComponentActivity() {
             dotSize = BridgeSettings.dotSize(this),
             dotShape = BridgeSettings.dotShape(this),
             dotAlpha = BridgeSettings.dotAlpha(this),
+            burnInEnabled = BridgeSettings.burnInEnabled(this),
+            burnInIntervalMs = BridgeSettings.burnInIntervalMs(this),
         )
         // Restored before the model catalogue arrives; a stored model that no
         // longer exists is replaced once the catalogue does.
@@ -260,6 +262,16 @@ class MainActivity : ComponentActivity() {
                     BridgeSettings.setDotAlpha(this, alpha)
                     state = state.copy(dotAlpha = alpha)
                     applyDotAppearance()
+                },
+                onBurnIn = { enabled ->
+                    BridgeSettings.setBurnInEnabled(this, enabled)
+                    state = state.copy(burnInEnabled = enabled)
+                    applyBurnIn()
+                },
+                onBurnInInterval = { interval ->
+                    BridgeSettings.setBurnInIntervalMs(this, interval)
+                    state = state.copy(burnInIntervalMs = BridgeSettings.burnInIntervalMs(this))
+                    applyBurnIn()
                 },
                 onAdjustDot = { adjusting ->
                     state = state.copy(adjustingDot = adjusting)
@@ -965,6 +977,14 @@ class MainActivity : ComponentActivity() {
                 ),
             )
         }.onFailure { toast("请在系统设置中允许悬浮窗") }
+    }
+
+    /** Pushes the burn-in settings to the live overlay. */
+    private fun applyBurnIn() {
+        BridgeService.overlayRef?.refreshBurnIn(
+            enabled = BridgeSettings.burnInEnabled(this),
+            intervalMs = BridgeSettings.burnInIntervalMs(this),
+        )
     }
 
     /** Pushes the dot's appearance to the live overlay. */
