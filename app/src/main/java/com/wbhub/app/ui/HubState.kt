@@ -48,7 +48,7 @@ data class HubState(
 )
 
 /** Which operation is in flight, so each control can show its own indicator. */
-enum class Loading { CHECKIN, BALANCE, MODELS }
+enum class Loading { CHECKIN, BALANCE, MODELS, STREAK, ACTIVITY, TRAVEL, NIGHT }
 
 /** Whether any build holds at least one saved account. */
 val HubState.hasAnyCredential: Boolean

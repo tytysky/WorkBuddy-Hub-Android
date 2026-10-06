@@ -49,6 +49,10 @@ fun HubApp(
     onCheckin: () -> Unit,
     onCheckinAll: () -> Unit,
     onRefreshBalance: () -> Unit,
+    onStreakBonus: () -> Unit,
+    onActivityReport: () -> Unit,
+    onTravel: () -> Unit,
+    onNightOwl: () -> Unit,
     onCopyEndpoint: () -> Unit,
     onCopyModel: (String) -> Unit,
     onRequestNotifications: () -> Unit,
@@ -126,7 +130,16 @@ fun HubApp(
                             onOverlayLocked = onOverlayLocked,
                         )
                         HubTab.Calls -> CallsScreen(state, onClearCalls, onRefreshCalls)
-                        HubTab.Rewards -> RewardsScreen(state, onCheckin, onCheckinAll, onRefreshBalance)
+                        HubTab.Rewards -> RewardsScreen(
+                            state = state,
+                            onCheckin = onCheckin,
+                            onCheckinAll = onCheckinAll,
+                            onRefreshBalance = onRefreshBalance,
+                            onStreakBonus = onStreakBonus,
+                            onActivityReport = onActivityReport,
+                            onTravel = onTravel,
+                            onNightOwl = onNightOwl,
+                        )
                     }
                 }
             }

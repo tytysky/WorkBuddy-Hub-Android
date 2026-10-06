@@ -525,6 +525,10 @@ fun RewardsScreen(
     onCheckin: () -> Unit,
     onCheckinAll: () -> Unit,
     onRefreshBalance: () -> Unit,
+    onStreakBonus: () -> Unit,
+    onActivityReport: () -> Unit,
+    onTravel: () -> Unit,
+    onNightOwl: () -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -533,7 +537,7 @@ fun RewardsScreen(
     ) {
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.padding(16.dp), Arrangement.spacedBy(10.dp)) {
                     Text("每日签到", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Button(
                         onClick = onCheckin,
@@ -555,6 +559,46 @@ fun RewardsScreen(
                             Text("签到领积分")
                         }
                     }
+                }
+            }
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), Arrangement.spacedBy(10.dp)) {
+                    Text("自动任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "每个按钮独立执行，长按可对全部账号执行",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    BonusButton(
+                        label = "连登管家",
+                        hint = "兑换已解锁档位 + 抽奖 + 补签",
+                        loading = state.loading == Loading.STREAK,
+                        enabled = state.loading == null,
+                        onClick = onStreakBonus,
+                    )
+                    BonusButton(
+                        label = "活跃上报",
+                        hint = "点亮今日连登",
+                        loading = state.loading == Loading.ACTIVITY,
+                        enabled = state.loading == null,
+                        onClick = onActivityReport,
+                    )
+                    BonusButton(
+                        label = "猫猫旅行",
+                        hint = "领养 / 派出 / 领取奖励",
+                        loading = state.loading == Loading.TRAVEL,
+                        enabled = state.loading == null,
+                        onClick = onTravel,
+                    )
+                    BonusButton(
+                        label = "夜猫子",
+                        hint = "23:00–08:00 时段有效",
+                        loading = state.loading == Loading.NIGHT,
+                        enabled = state.loading == null,
+                        onClick = onNightOwl,
+                    )
                 }
             }
         }
@@ -615,12 +659,46 @@ fun RewardsScreen(
     }
 }
 
-/** Modal shown when a check-in attempt finishes. */
+/**
+ * One entry in the bonus-routine card.
+ *
+ * Every routine gets its own button because they hit different endpoints, some
+ * are only valid inside a time window, and one failing should not make another
+ * look unsuccessful.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun BonusButton(
+    label: String,
+    hint: String,
+    loading: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    FilledTonalButton(
+        onClick = onClick,
+        enabled = enabled && !loading,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        if (loading) {
+            CircularWavyProgressIndicator(modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("$label 执行中…")
+        } else {
+            Column(Modifier.fillMaxWidth()) {
+                Text(label)
+                Text(hint, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+/** Modal shown when a check-in or bonus routine finishes. */
 @Composable
 fun CheckinDialog(message: String, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("签到结果") },
+        title = { Text("执行结果") },
         text = { Text(message) },
         confirmButton = {
             TextButton(onClick = onDismiss) { Text("好") }

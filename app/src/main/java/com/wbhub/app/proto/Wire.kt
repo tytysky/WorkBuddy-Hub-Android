@@ -241,6 +241,20 @@ object Wire {
         return headers
     }
 
+    /**
+     * Growth-domain headers: the billing set plus request provenance.
+     *
+     * The growth endpoints sit on the chat base but authenticate like billing,
+     * and the upstream additionally expects the origin/referer pair the official
+     * web client sends, so both halves are combined here.
+     */
+    fun growthHeaders(region: Region, accessToken: String, uid: String, domain: String, enterpriseId: String?): Map<String, String> {
+        val headers = billingHeaders(region, accessToken, uid, domain, enterpriseId).toMutableMap()
+        headers["Origin"] = originOf(region)
+        headers["Referer"] = "${originOf(region)}/"
+        return headers
+    }
+
     // ------------------------------------------------------------------ //
     // Model catalogue
     // ------------------------------------------------------------------ //

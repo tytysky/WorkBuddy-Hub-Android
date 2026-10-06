@@ -23,6 +23,7 @@ import com.wbhub.app.bridge.CallLogStore
 import com.wbhub.app.bridge.Notifications
 import com.wbhub.app.data.CheckinItem
 import com.wbhub.app.data.Login
+import com.wbhub.app.proto.AutoTaskRunner
 import com.wbhub.app.proto.CheckinOutcome
 import com.wbhub.app.proto.Credential
 import com.wbhub.app.proto.CredentialStore
@@ -59,6 +60,12 @@ class MainActivity : ComponentActivity() {
     private var showHelp by mutableStateOf(false)
     private var askedForNotifications = false
     private val upstream = UpstreamClient()
+
+    /**
+     * Daily bonus routine run after each check-in. It is idempotent upstream,
+     * so re-running it on every check-in cannot duplicate rewards.
+     */
+    private val autoTask = AutoTaskRunner()
 
     /**
      * Sign-in polling must survive the app leaving the foreground, because the
@@ -141,6 +148,10 @@ class MainActivity : ComponentActivity() {
                 onCheckin = { doCheckin() },
                 onCheckinAll = { checkinAllAccounts() },
                 onRefreshBalance = { loadBalance() },
+                onStreakBonus = { runStreakBonus() },
+                onActivityReport = { runActivityReport() },
+                onTravel = { runTravel() },
+                onNightOwl = { runNightOwl() },
                 onCopyEndpoint = { copyEndpoint() },
                 onCopyModel = { id -> copyToClipboard(id, "已复制模型名") },
                 onRequestNotifications = { requestNotificationPermissionIfNeeded() },
@@ -419,6 +430,47 @@ class MainActivity : ComponentActivity() {
             loadBalance()
         }
     }
+
+    // ------------------------------------------------------------------ //
+    // Bonus routines
+    //
+    // Each runs on its own button rather than riding along with the check-in:
+    // they hit different endpoints, some only work inside a time window, and a
+    // failure in one should not make a check-in look unsuccessful.
+    // ------------------------------------------------------------------ //
+
+    /** Runs one named routine against every account of the active build. */
+    private fun runBonus(label: String, kind: Loading, routine: (Credential) -> AutoTaskRunner.Result) {
+        val region = state.realm
+        val targets = state.accounts[region].orEmpty()
+        if (targets.isEmpty()) {
+            state = state.copy(checkinMessage = "${regionLabel(region)}还没有账号", checkinItems = emptyList())
+            return
+        }
+        lifecycleScope.launch {
+            val items = withContext(Dispatchers.IO) {
+                withLoading(kind) {
+                    targets.map { account ->
+                        val result = runCatching { routine(account.toCredential()) }
+                            .getOrElse { AutoTaskRunner.Result(listOf(AutoTaskRunner.Step(label, false, it.message ?: "失败"))) }
+                        CheckinItem(label = account.label, ok = result.steps.all { it.ok }, message = result.summary)
+                    }
+                }
+            }
+            state = state.copy(checkinItems = items, checkinMessage = "$label 已完成（${items.size} 个账号）")
+            loadBalance()
+        }
+    }
+
+    private fun runStreakBonus() = runBonus("连登管家", Loading.STREAK) { autoTask.runStreakBonus(it) }
+
+    private fun runActivityReport() = runBonus("活跃上报", Loading.ACTIVITY) { credential ->
+        AutoTaskRunner.Result(listOf(autoTask.reportActivity(credential)))
+    }
+
+    private fun runTravel() = runBonus("猫猫旅行", Loading.TRAVEL) { autoTask.runTravel(it) }
+
+    private fun runNightOwl() = runBonus("夜猫子", Loading.NIGHT) { autoTask.runNightOwl(it) }
 
     private fun loadBalance() {
         val cred = state.credential

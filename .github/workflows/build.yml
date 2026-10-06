@@ -1,0 +1,94 @@
+name: build
+
+# Builds a debug and a release APK on every push so a usable artefact is
+# always downloadable without tagging a release first.
+#
+# The release APK is signed with the same key the published versions use, so it
+# installs over an existing app. Signing material lives in repository secrets;
+# when they are absent the release build still runs but produces an unsigned
+# APK, which is a legible outcome rather than a failed build.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # The keystore is stored base64-encoded so it survives being pasted into a
+      # secret. The properties file is composed here rather than committed.
+      - name: Restore signing material
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::KEYSTORE_BASE64 is not set; the release APK will be unsigned"
+            exit 0
+          fi
+          mkdir -p keystore
+          echo "$KEYSTORE_BASE64" | base64 -d > keystore/wb-hub.jks
+          cat > keystore.properties <<EOF
+          storeFile=keystore/wb-hub.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+
+      - name: Build debug
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Build release
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Report signing state
+        run: |
+          APK=app/build/outputs/apk/release/app-release.apk
+          if [ ! -f "$APK" ]; then
+            echo "::error::release APK was not produced"
+            exit 1
+          fi
+          if apksigner verify --print-certs "$APK" >/dev/null 2>&1; then
+            echo "release APK is signed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::release APK is unsigned (no signing secrets configured)"
+          fi
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: wb-hub-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: wb-hub-release
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
