@@ -161,6 +161,11 @@ class MainActivity : ComponentActivity() {
             lanKey = BridgeSettings.lanKey(this),
             lanEnabled = lanOn,
             lanAddresses = if (lanOn) LanAddresses.current() else emptyList(),
+            stealthEnabled = BridgeSettings.stealthEnabled(this),
+            dotColor = BridgeSettings.dotColor(this),
+            dotSize = BridgeSettings.dotSize(this),
+            dotShape = BridgeSettings.dotShape(this),
+            dotAlpha = BridgeSettings.dotAlpha(this),
         )
         // Restored before the model catalogue arrives; a stored model that no
         // longer exists is replaced once the catalogue does.
@@ -228,6 +233,39 @@ class MainActivity : ComponentActivity() {
                     state = state.copy(lanKey = BridgeSettings.lanKey(this))
                     service?.restartBridge()
                     toast("已更新局域网密钥")
+                },
+                onToggleStealth = { enabled ->
+                    BridgeSettings.setStealthEnabled(this, enabled)
+                    state = state.copy(stealthEnabled = enabled)
+                    // The window's touchability is fixed at add time, so the
+                    // overlay rebuilds itself.
+                    BridgeService.overlayRef?.stealthMode = enabled
+                },
+                onDotColor = { color ->
+                    BridgeSettings.setDotColor(this, color)
+                    state = state.copy(dotColor = color)
+                    applyDotAppearance()
+                },
+                onDotSize = { size ->
+                    BridgeSettings.setDotSize(this, size)
+                    state = state.copy(dotSize = BridgeSettings.dotSize(this))
+                    applyDotAppearance()
+                },
+                onDotShape = { shape ->
+                    BridgeSettings.setDotShape(this, shape)
+                    state = state.copy(dotShape = shape)
+                    applyDotAppearance()
+                },
+                onDotAlpha = { alpha ->
+                    BridgeSettings.setDotAlpha(this, alpha)
+                    state = state.copy(dotAlpha = alpha)
+                    applyDotAppearance()
+                },
+                onAdjustDot = { adjusting ->
+                    state = state.copy(adjustingDot = adjusting)
+                    // The dot's touchability is a window flag, so it has to be
+                    // re-added for the change to apply.
+                    BridgeService.overlayRef?.adjusting = adjusting
                 },
                 onStreakBonus = { runStreakBonus() },
                 onActivityReport = { runActivityReport() },
@@ -927,6 +965,17 @@ class MainActivity : ComponentActivity() {
                 ),
             )
         }.onFailure { toast("请在系统设置中允许悬浮窗") }
+    }
+
+    /** Pushes the dot's appearance to the live overlay. */
+    private fun applyDotAppearance() {
+        val overlay = BridgeService.overlayRef ?: return
+        overlay.refreshAppearance(
+            color = BridgeSettings.dotColor(this),
+            size = BridgeSettings.dotSize(this),
+            shape = BridgeSettings.dotShape(this),
+            alpha = BridgeSettings.dotAlpha(this),
+        )
     }
 
     /** Reloads the recorded calls, newest last. */

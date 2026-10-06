@@ -127,7 +127,14 @@ class BridgeService : Service() {
             onClose = { removeOverlay() },
             panelOpacity = BridgeSettings.opacity(this),
             locked = BridgeSettings.locked(this),
-        ).also { it.show() }
+            stealth = BridgeSettings.stealthEnabled(this),
+        ).also { overlay ->
+            overlay.dotColor = BridgeSettings.dotColor(this)
+            overlay.dotSize = BridgeSettings.dotSize(this)
+            overlay.dotShape = BridgeSettings.dotShape(this)
+            overlay.dotAlpha = BridgeSettings.dotAlpha(this)
+            overlay.show()
+        }
         overlayRef = overlay
     }
 

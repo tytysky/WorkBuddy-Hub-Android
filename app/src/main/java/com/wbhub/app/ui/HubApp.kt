@@ -28,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import com.wbhub.app.agent.ApprovalMode
+import com.wbhub.app.bridge.DotShape
 import com.wbhub.app.data.Login
 import com.wbhub.app.proto.Wire
 
@@ -78,6 +79,12 @@ fun HubApp(
     onSaveKey: (String) -> Unit,
     onToggleLan: (Boolean) -> Unit,
     onSaveLanKey: (String) -> Unit,
+    onToggleStealth: (Boolean) -> Unit,
+    onDotColor: (Int) -> Unit,
+    onDotSize: (Int) -> Unit,
+    onDotShape: (DotShape) -> Unit,
+    onDotAlpha: (Float) -> Unit,
+    onAdjustDot: (Boolean) -> Unit,
     onDismissCheckin: () -> Unit,
     showHelp: Boolean,
     onShowHelp: () -> Unit,
@@ -148,6 +155,12 @@ fun HubApp(
                             onSaveKey = onSaveKey,
                             onToggleLan = onToggleLan,
                             onSaveLanKey = onSaveLanKey,
+                            onToggleStealth = onToggleStealth,
+                            onDotColor = onDotColor,
+                            onDotSize = onDotSize,
+                            onDotShape = onDotShape,
+                            onDotAlpha = onDotAlpha,
+                            onAdjustDot = onAdjustDot,
                         )
                         HubTab.Agent -> AgentScreen(
                             agent = agent,

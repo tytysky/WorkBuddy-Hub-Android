@@ -17,6 +17,78 @@ object BridgeSettings {
     private const val KEY_Y = "y"
     private const val KEY_API_KEY = "api_key"
     private const val KEY_LAN = "lan_enabled"
+    private const val KEY_STEALTH = "stealth_enabled"
+    private const val KEY_DOT_X = "dot_x"
+    private const val KEY_DOT_Y = "dot_y"
+    private const val KEY_DOT_COLOR = "dot_color"
+    private const val KEY_DOT_SIZE = "dot_size"
+    private const val KEY_DOT_SHAPE = "dot_shape"
+    private const val KEY_DOT_ALPHA = "dot_alpha"
+
+    /**
+     * Whether the panel is replaced by a small dot.
+     *
+     * The dot exists so the process stays visible without the panel covering
+     * whatever the user is doing; it answers nothing when tapped.
+     */
+    fun stealthEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_STEALTH, false)
+
+    fun setStealthEnabled(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_STEALTH, value).apply()
+    }
+
+    /** Dot colour as a packed ARGB value. */
+    fun dotColor(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_DOT_COLOR, DEFAULT_DOT_COLOR)
+
+    fun setDotColor(context: Context, value: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putInt(KEY_DOT_COLOR, value).apply()
+    }
+
+    /** Dot diameter in dp. */
+    fun dotSize(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_DOT_SIZE, DEFAULT_DOT_SIZE)
+
+    fun setDotSize(context: Context, value: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putInt(KEY_DOT_SIZE, value.coerceIn(MIN_DOT_SIZE, MAX_DOT_SIZE)).apply()
+    }
+
+    fun dotShape(context: Context): DotShape =
+        DotShape.fromName(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_DOT_SHAPE, null))
+
+    fun setDotShape(context: Context, value: DotShape) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putString(KEY_DOT_SHAPE, value.name).apply()
+    }
+
+    /**
+     * Dot opacity, 0..1.
+     *
+     * Zero is allowed and means the dot is invisible while still being a window:
+     * that is the point, since the window is what keeps the process alive. A
+     * floor above zero would force a visible mark on someone who does not want
+     * one, and would make the setting unable to express that choice.
+     */
+    fun dotAlpha(context: Context): Float =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getFloat(KEY_DOT_ALPHA, DEFAULT_DOT_ALPHA)
+
+    fun setDotAlpha(context: Context, value: Float) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putFloat(KEY_DOT_ALPHA, value.coerceIn(0f, 1f)).apply()
+    }
+
+    /** A default that reads as "working" against most backgrounds. */
+    const val DEFAULT_DOT_COLOR = 0xFF34C759.toInt()
+    const val DEFAULT_DOT_SIZE = 12
+    const val MIN_DOT_SIZE = 6
+    const val MAX_DOT_SIZE = 40
+    const val DEFAULT_DOT_ALPHA = 1f
 
     /**
      * The key local clients present. Fixed: it is written into configs on this
@@ -85,6 +157,23 @@ object BridgeSettings {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().putInt(KEY_X, x).putInt(KEY_Y, y).apply()
     }
+
+    /**
+     * Dot position, kept apart from the panel's.
+     *
+     * The two are different sizes and serve different purposes, so where the
+     * dot is tucked away is rarely where the panel belongs; sharing one pair
+     * would make switching modes move the other one.
+     */
+    fun dotPosition(context: Context): Pair<Int, Int> {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        return prefs.getInt(KEY_DOT_X, -1) to prefs.getInt(KEY_DOT_Y, -1)
+    }
+
+    fun setDotPosition(context: Context, x: Int, y: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putInt(KEY_DOT_X, x).putInt(KEY_DOT_Y, y).apply()
+    }
 }
 
 /**
@@ -121,4 +210,19 @@ object LanAddresses {
      */
     private fun isWifi(name: String): Boolean =
         name.startsWith("wlan") || name.startsWith("ap") || name.startsWith("swlan")
+}
+
+/** Shape of the stealth indicator. */
+enum class DotShape(val label: String) {
+    /** A filled disc: the default, reads as a status light. */
+    FILLED("实心圆点"),
+
+    /** A ring: lighter on the eye while still visible. */
+    RING("空心圆圈"),
+    ;
+
+    companion object {
+        fun fromName(value: String?): DotShape =
+            entries.firstOrNull { it.name == value } ?: FILLED
+    }
 }

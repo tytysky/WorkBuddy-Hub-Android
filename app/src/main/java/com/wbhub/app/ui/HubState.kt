@@ -11,6 +11,7 @@ import com.wbhub.app.agent.AgentStore
 import com.wbhub.app.agent.AgentTools
 import com.wbhub.app.agent.ApprovalMode
 import com.wbhub.app.bridge.CallRecord
+import com.wbhub.app.bridge.DotShape
 import com.wbhub.app.data.CheckinItem
 import com.wbhub.app.proto.Balance
 import com.wbhub.app.proto.Credential
@@ -53,6 +54,14 @@ data class HubState(
     val calls: List<CallRecord> = emptyList(),
     val overlayOpacity: Float = 0.94f,
     val overlayLocked: Boolean = false,
+    /** Whether the overlay is a non-interactive dot instead of the panel. */
+    val stealthEnabled: Boolean = false,
+    val dotColor: Int = 0xFF34C759.toInt(),
+    val dotSize: Int = 12,
+    val dotShape: DotShape = DotShape.FILLED,
+    val dotAlpha: Float = 1f,
+    /** Whether the dot is temporarily movable. */
+    val adjustingDot: Boolean = false,
     val realm: Wire.Region = Wire.Region.CN,
     val accounts: Map<Wire.Region, List<SavedAccount>> = emptyMap(),
     val activeAccountId: String? = null,

@@ -1,6 +1,9 @@
 package com.wbhub.app.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -36,6 +39,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
@@ -53,12 +58,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.wbhub.app.data.Login
+import kotlin.math.roundToInt
 import com.wbhub.app.bridge.CallRecord
 import com.wbhub.app.bridge.UsageSummary
+import com.wbhub.app.bridge.DotShape
 import java.util.Locale
 import com.wbhub.app.data.CheckinItem
 import com.wbhub.app.proto.Wire
@@ -332,6 +340,12 @@ fun BridgeScreen(
     onSaveKey: (String) -> Unit,
     onToggleLan: (Boolean) -> Unit,
     onSaveLanKey: (String) -> Unit,
+    onToggleStealth: (Boolean) -> Unit,
+    onDotColor: (Int) -> Unit,
+    onDotSize: (Int) -> Unit,
+    onDotShape: (DotShape) -> Unit,
+    onDotAlpha: (Float) -> Unit,
+    onAdjustDot: (Boolean) -> Unit,
 ) {
     var portText by remember(state.port) { mutableStateOf(state.port.toString()) }
     // The key field is local state so editing does not rewrite the running
@@ -512,6 +526,48 @@ fun BridgeScreen(
                             Switch(
                                 checked = state.overlayLocked,
                                 onCheckedChange = onOverlayLocked,
+                            )
+                        }
+
+                        HorizontalDivider()
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("隐匿模式", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    "悬浮窗变成一个小圆点，不拦截点击，可以穿过去点到下面的应用。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = state.stealthEnabled,
+                                onCheckedChange = onToggleStealth,
+                            )
+                        }
+
+                        if (state.stealthEnabled) {
+                            FilledTonalButton(
+                                onClick = { onAdjustDot(!state.adjustingDot) },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(if (state.adjustingDot) "完成调整" else "调整位置")
+                            }
+                            Text(
+                                if (state.adjustingDot) {
+                                    "现在可以拖动小圆点，拖到想要的位置后点「完成调整」。"
+                                } else {
+                                    "小圆点会拦截点击，所以默认不能拖动；点上方按钮临时开启拖动。"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            DotSettings(
+                                state = state,
+                                onDotColor = onDotColor,
+                                onDotSize = onDotSize,
+                                onDotShape = onDotShape,
+                                onDotAlpha = onDotAlpha,
                             )
                         }
                     }
@@ -1035,3 +1091,115 @@ private fun formatCredits(value: Double): String {
  */
 private fun randomKey(): String =
     "wb-" + (1..24).map { "0123456789abcdef"[java.security.SecureRandom().nextInt(16)] }.joinToString("")
+
+/**
+ * Appearance controls for the stealth dot, with a live preview.
+ *
+ * The preview matters more than the controls: a colour and a diameter are hard
+ * to judge as numbers, and what the user is choosing is how visible the
+ * indicator is on their own screen.
+ */
+@Composable
+private fun DotSettings(
+    state: HubState,
+    onDotColor: (Int) -> Unit,
+    onDotSize: (Int) -> Unit,
+    onDotShape: (DotShape) -> Unit,
+    onDotAlpha: (Float) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // A checkerboard behind the preview would be the honest way to show
+            // a faint colour, but the shape alone is enough to judge here.
+            val previewColor = Color(state.dotColor).copy(alpha = state.dotAlpha)
+            Box(
+                modifier = Modifier
+                    .size(state.dotSize.dp)
+                    .then(
+                        when (state.dotShape) {
+                            DotShape.FILLED -> Modifier.background(previewColor, CircleShape)
+                            DotShape.RING -> Modifier.border(
+                                width = if (state.dotSize >= 20) 3.dp else 2.dp,
+                                color = previewColor,
+                                shape = CircleShape,
+                            )
+                        },
+                    ),
+            )
+            Spacer(Modifier.width(12.dp))
+            Text(
+                "预览",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Text("形状", style = MaterialTheme.typography.labelMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            DotShape.entries.forEach { shape ->
+                FilterChip(
+                    selected = state.dotShape == shape,
+                    onClick = { onDotShape(shape) },
+                    label = { Text(shape.label) },
+                )
+            }
+        }
+
+        Text("颜色", style = MaterialTheme.typography.labelMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            DOT_PALETTE.forEach { color ->
+                val selected = state.dotColor == color
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .background(Color(color), CircleShape)
+                        .border(
+                            width = if (selected) 3.dp else 1.dp,
+                            color = if (selected) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.outline
+                            },
+                            shape = CircleShape,
+                        )
+                        .clickable { onDotColor(color) },
+                )
+            }
+        }
+
+        Text(
+            "大小 ${state.dotSize}dp",
+            style = MaterialTheme.typography.labelMedium,
+        )
+        Slider(
+            value = state.dotSize.toFloat(),
+            onValueChange = { onDotSize(it.roundToInt()) },
+            valueRange = 6f..40f,
+            steps = 33,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Text(
+            "透明度 ${(state.dotAlpha * 100).toInt()}%",
+            style = MaterialTheme.typography.labelMedium,
+        )
+        Slider(
+            value = state.dotAlpha,
+            onValueChange = onDotAlpha,
+            // The floor is zero: an invisible dot still keeps the process
+            // visible to the system, which is the window's whole purpose.
+            valueRange = 0f..1f,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/** Colours offered for the dot: readable on both light and dark backgrounds. */
+private val DOT_PALETTE = listOf(
+    0xFF34C759.toInt(), // green
+    0xFF0A84FF.toInt(), // blue
+    0xFFFF9F0A.toInt(), // orange
+    0xFFFF3B30.toInt(), // red
+    0xFFBF5AF2.toInt(), // purple
+    0xFF8E8E93.toInt(), // grey
+)
