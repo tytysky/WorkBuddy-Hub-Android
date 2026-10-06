@@ -126,7 +126,7 @@ class AgentClient {
         tools: AgentTools,
         onEvent: (Event) -> Unit,
     ): Turn {
-        val body = buildBody(transcript, modelId, effort, contextWindow, tools)
+        val body = buildBody(transcript, modelId, effort, contextWindow, tools, credential)
         val region = credential.region
         val identity = ChatIdentity.forRegion(region)
         val conn = open(
@@ -239,6 +239,7 @@ class AgentClient {
         effort: String?,
         contextWindow: Int,
         tools: AgentTools,
+        credential: Credential,
     ): String {
         val messages = JSONArray()
         for (message in transcript) {
@@ -263,9 +264,15 @@ class AgentClient {
             // out lets the model use its own default.
             if (contextWindow > 0) put("context_window", contextWindow)
         }
-        // The shared shaping rules still apply, so the same role and
-        // tool_choice normalisation the bridge performs is reused here.
-        return Wire.prepareChatBody(root.toString())
+        // The shared shaping rules apply, but which set depends on the build:
+        // the international gateway rejects a body without a leading system
+        // message (code 11128, surfaced as a security-policy block), so the
+        // same branch the bridge takes is taken here.
+        return if (credential.region == Wire.Region.GLOBAL) {
+            Wire.prepareInternationalChatBody(root.toString())
+        } else {
+            Wire.prepareChatBody(root.toString())
+        }
     }
 
     /** Serialises tool calls back into the shape the gateway expects. */
