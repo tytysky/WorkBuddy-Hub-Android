@@ -42,6 +42,8 @@ fun HubApp(
     onLogout: () -> Unit,
     onClearCalls: () -> Unit,
     onOpenCallSettings: () -> Unit,
+    onOpenModelStats: () -> Unit,
+    onDismissModelStats: () -> Unit,
     onDismissCallSettings: () -> Unit,
     onCallLimitChange: (Int) -> Unit,
     onRefreshCalls: () -> Unit,
@@ -190,6 +192,7 @@ fun HubApp(
                             onClear = onClearCalls,
                             onRefresh = onRefreshCalls,
                             onOpenSettings = onOpenCallSettings,
+                            onOpenModelStats = onOpenModelStats,
                         )
                         HubTab.Rewards -> RewardsScreen(
                             state = state,
@@ -219,6 +222,9 @@ fun HubApp(
                 onDismiss = onDismissCredentialDetails,
                 onCopy = onCopyField,
             )
+        }
+        if (state.showModelStats) {
+            ModelStatsSheet(state = state, onDismiss = onDismissModelStats)
         }
         if (state.showCallSettings) {
             CallSettingsSheet(

@@ -74,6 +74,7 @@ import java.util.Locale
 import com.wbhub.app.data.CheckinItem
 import com.wbhub.app.proto.Wire
 
+import com.wbhub.app.proto.HubModel
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun CredentialScreen(
@@ -955,6 +956,7 @@ fun CallsScreen(
     onClear: () -> Unit,
     onRefresh: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenModelStats: () -> Unit,
 ) {
     // Calls arrive from the service without the UI being told, so the page
     // reloads while it is on screen rather than only when it is opened.
@@ -964,10 +966,16 @@ fun CallsScreen(
             kotlinx.coroutines.delay(2000L)
         }
     }
+    // The page follows the account in use: usage is per account, and mixing
+    // them would answer neither "how much has this one used" nor "which is
+    // nearly spent". The totals and the list are filtered by the same id, so
+    // the figures always describe the records that are visible.
+    val accountId = state.activeAccountId.orEmpty()
+    val records = state.calls.filter { it.accountId == accountId }
     // The summary reports what the endpoint has served in total, not what the
     // list below happens to still hold: the list is capped, so deriving the
     // figures from it would make them fall as older calls age out.
-    val totals = state.callTotals
+    val totals = state.accountTotals.of(accountId)
     // The pull is a manual reload of what is already on disk; the periodic poll
     // above keeps the list live, and this exists so a user who has just made a
     // call does not have to wait for the next tick.
@@ -998,7 +1006,7 @@ fun CallsScreen(
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.weight(1f),
                         )
-                        if (state.calls.isNotEmpty()) {
+                        if (records.isNotEmpty()) {
                             TextButton(onClick = onClear) { Text("清空") }
                         }
                         IconButton(onClick = onOpenSettings) {
@@ -1019,24 +1027,28 @@ fun CallsScreen(
             }
         }
 
-        if (state.calls.isEmpty()) {
+        if (records.isEmpty()) {
             item {
                 Text(
-                    "还没有调用记录。通过本地 API 平台发起对话后，这里会显示每次调用的模型、Tokens 与积分消耗。",
+                    "这个账号还没有调用记录。通过本地 API 平台发起对话后，这里会显示每次调用的模型、Tokens 与积分消耗。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         } else {
             item {
-                Text(
-                    "最近 ${state.calls.size} 次调用（新→旧）",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "最近 ${records.size} 次调用（新→旧）",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onOpenModelStats) { Text("模型调用频率") }
+                }
             }
-            items(state.calls.reversed(), key = { it.timestamp.toString() + it.model }) { record ->
-                CallRow(record)
+            items(records.reversed(), key = { it.timestamp.toString() + it.model }) { record ->
+                CallRow(record, state.models)
             }
         }
     }
@@ -1061,8 +1073,15 @@ private fun StatCell(label: String, value: String) {
 }
 
 @Composable
-private fun CallRow(record: CallRecord) {
+private fun CallRow(record: CallRecord, models: List<HubModel>) {
     val failed = record.outcome == CallRecord.Outcome.FAILED
+    // The catalogue row when the model is still offered; a delisted model has
+    // none, so a stand-in is built from the id to keep the badge meaningful.
+    val model = models.firstOrNull { it.id == record.model }
+        ?: HubModel(id = record.model, name = record.model)
+    // A listed model may have changed price since the call, and the current
+    // figure is the one a reader is deciding against.
+    val multiplier = model.multiplier.takeIf { it >= 0 } ?: record.multiplier
     // A tinted card rather than coloured text alone: the outcome is the first
     // thing a reader wants from a list, and colour carries it faster than a
     // word does. The tint is kept faint so the figures stay readable.
@@ -1075,15 +1094,25 @@ private fun CallRow(record: CallRecord) {
     ) {
         Column(Modifier.padding(12.dp), Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    record.model.ifEmpty { "(未知模型)" },
-                    style = MaterialTheme.typography.titleSmall,
-                    color = accent,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                VendorBadge(model, Modifier.size(30.dp))
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        record.model.ifEmpty { "(未知模型)" },
+                        style = MaterialTheme.typography.titleSmall,
+                        color = accent,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (multiplier >= 0) {
+                        Text(
+                            "倍率 ${formatMultiplier(multiplier)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 Text(
                     record.timeText,
                     style = MaterialTheme.typography.labelSmall,
@@ -1325,6 +1354,156 @@ private val DOT_PALETTE = listOf(
     0xFFBF5AF2.toInt(), // purple
     0xFF8E8E93.toInt(), // grey
 )
+
+/**
+ * How often each model has been used.
+ *
+ * Every model the account offers is listed, including ones never called: a
+ * ranking of used models answers "which is most used" but not "which am I
+ * paying for and not using", which is the other half of the question.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ModelStatsSheet(
+    state: HubState,
+    onDismiss: () -> Unit,
+) {
+    val accountId = state.activeAccountId.orEmpty()
+    val records = state.calls.filter { it.accountId == accountId }
+    val counts = records.groupingBy { it.model }.eachCount()
+    // Credit is summed rather than averaged: the question the list answers is
+    // where the account's spending went, and a per-call average would hide a
+    // model that is cheap but called constantly.
+    val creditsByModel: Map<String, Double> = records
+        .groupBy { it.model }
+        .mapValues { entry -> entry.value.sumOf { it.credits } }
+
+    // Listed models first, then any that appear only in the records: those are
+    // delisted, and dropping them would lose calls that did happen.
+    val listed = state.models.map { model ->
+        StatRow(
+            model = model,
+            count = counts[model.id] ?: 0,
+            credits = creditsByModel[model.id] ?: 0.0,
+        )
+    }
+    val delisted = counts
+        .filterKeys { id -> state.models.none { it.id == id } }
+        .map { (id, count) ->
+            StatRow(
+                model = HubModel(id = id, name = id),
+                count = count,
+                credits = creditsByModel[id] ?: 0.0,
+                fallbackMultiplier = records.firstOrNull { it.model == id }?.multiplier ?: -1.0,
+            )
+        }
+    val rows = (listed + delisted).sortedWith(
+        compareByDescending<StatRow> { it.count }.thenBy { it.model.name },
+    )
+    val totalCredits = records.sumOf { it.credits }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 40.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            item {
+                Text(
+                    "模型调用频率",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    "该账号共 ${records.size} 次调用、消耗 ${formatCredits(totalCredits)} 积分；" +
+                        "按次数排序，未使用的模型也会列出。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+                )
+            }
+            items(rows) { row -> ModelStatRow(row, records.size) }
+        }
+    }
+}
+
+/** One model and what it has been used for. */
+private data class StatRow(
+    val model: HubModel,
+    val count: Int,
+    /** Credit spent on this model. */
+    val credits: Double = 0.0,
+    /**
+     * Multiplier to show when the catalogue no longer carries the model.
+     *
+     * A listed model's current figure wins over this, so a price change is
+     * visible rather than hidden behind what the call happened to cost.
+     */
+    val fallbackMultiplier: Double = -1.0,
+) {
+    val multiplier: Double get() = model.multiplier.takeIf { it >= 0 } ?: fallbackMultiplier
+}
+
+@Composable
+private fun ModelStatRow(row: StatRow, totalCalls: Int) {
+    // Share of all calls, which is the figure that makes a ranking readable:
+    // "12 times" means little without knowing whether that is most of the
+    // traffic or a rounding error.
+    val share = if (totalCalls > 0) row.count * 100.0 / totalCalls else 0.0
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        VendorBadge(row.model, Modifier.size(32.dp))
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                row.model.name.ifEmpty { row.model.id },
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val detail = buildList {
+                if (row.multiplier >= 0) add("倍率 ${formatMultiplier(row.multiplier)}")
+                if (row.credits > 0) add("消耗 ${formatCredits(row.credits)} 积分")
+            }.joinToString(" · ")
+            if (detail.isNotEmpty()) {
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                "${row.count} 次",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = if (row.count > 0) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Text(
+                String.format(Locale.US, "%.1f%%", share),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** Renders a price multiplier, trimming a trailing zero. */
+private fun formatMultiplier(value: Double): String =
+    if (value == value.toLong().toDouble()) {
+        value.toLong().toString()
+    } else {
+        String.format(Locale.US, "%.2f", value)
+    }
 
 /**
  * Settings for the call history, shown as a bottom sheet from the calls page.

@@ -6,6 +6,7 @@ import android.os.Binder
 import android.os.IBinder
 import android.os.PowerManager
 import com.wbhub.app.proto.CredentialStore
+import com.wbhub.app.proto.ProtoModel
 import com.wbhub.app.proto.UpstreamClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +32,13 @@ class BridgeService : Service() {
     private val binder = LocalBinder()
     private val scope = CoroutineScope(Dispatchers.Default + Job())
     private var models: List<String> = emptyList()
+
+    /**
+     * The full catalogue rows, kept so a recorded call can carry the price of
+     * the model it used. The id list above is what the bridge advertises; this
+     * is the same fetch with the figures retained.
+     */
+    private var catalogue: List<ProtoModel> = emptyList()
     private val upstream = UpstreamClient()
     private lateinit var store: CredentialStore
     private var bridge: BridgeServer? = null
@@ -72,6 +80,7 @@ class BridgeService : Service() {
                 lanKey = BridgeSettings.lanKey(this),
                 credential = { store.resolve { c -> upstream.refreshToken(c) } },
                 models = { models },
+                multiplierOf = { id -> catalogue.firstOrNull { it.id == id }?.multiplier ?: -1.0 },
                 // Read from settings rather than the intent: toggling LAN access
                 // restarts the service, and the flag is one of the things it
                 // must pick up.
@@ -151,8 +160,11 @@ class BridgeService : Service() {
         while (true) {
             val cred = store.active()
             if (cred != null) {
-                val fetched = runCatching { upstream.fetchModels(cred).map { it.id } }.getOrNull()
-                if (!fetched.isNullOrEmpty()) models = fetched
+                val fetched = runCatching { upstream.fetchModels(cred) }.getOrNull()
+                if (!fetched.isNullOrEmpty()) {
+                    catalogue = fetched
+                    models = fetched.map { it.id }
+                }
             }
             delay(MODEL_REFRESH_MS)
         }
@@ -174,6 +186,7 @@ class BridgeService : Service() {
             lanKey = BridgeSettings.lanKey(this),
             credential = { store.resolve { c -> upstream.refreshToken(c) } },
             models = { models },
+            multiplierOf = { id -> catalogue.firstOrNull { it.id == id }?.multiplier ?: -1.0 },
             lanEnabled = BridgeSettings.lanEnabled(this),
             onCall = { record -> callLog.append(record) },
         ).also { it.start() }

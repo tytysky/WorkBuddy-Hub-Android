@@ -33,6 +33,7 @@ data class SavedAccount(
         nickname = nickname,
         enterpriseId = enterpriseId,
         source = source,
+        accountId = id,
     )
 }
 

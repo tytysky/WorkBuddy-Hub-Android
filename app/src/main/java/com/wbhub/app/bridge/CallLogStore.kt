@@ -30,6 +30,22 @@ data class CallRecord(
      * match what this device did.
      */
     val sourceIp: String = "",
+    /**
+     * Which saved account served the call; empty for records written before
+     * this was tracked.
+     */
+    val accountId: String = "",
+    /** The account's name at the time, so a deleted account still reads. */
+    val accountLabel: String = "",
+    /**
+     * The model's price multiplier when the call was made.
+     *
+     * Stored rather than looked up: the catalogue changes, and what a call cost
+     * is a fact about the call. Display prefers the current figure when the
+     * model is still listed, so a price change is visible rather than hidden
+     * behind a stale number.
+     */
+    val multiplier: Double = -1.0,
 ) {
     enum class Outcome { OK, FAILED }
 
@@ -67,6 +83,43 @@ data class CallTotals(
         completionTokens = completionTokens + record.completionTokens,
         credits = credits + record.credits,
     )
+
+    operator fun plus(other: CallTotals): CallTotals = CallTotals(
+        calls = calls + other.calls,
+        failures = failures + other.failures,
+        promptTokens = promptTokens + other.promptTokens,
+        completionTokens = completionTokens + other.completionTokens,
+        credits = credits + other.credits,
+    )
+
+    companion object {
+        /** Sentinel key for calls whose account is unknown. */
+        const val UNKNOWN_ACCOUNT = ""
+    }
+}
+
+/**
+ * Running totals, kept per account.
+ *
+ * Accounts are separate because they are separate pools of credit: a combined
+ * figure answers neither "how much has this account used" nor "which one is
+ * nearly spent", which are the questions the page exists to answer.
+ */
+data class AccountTotals(
+    /** Totals per account id; see [CallTotals.UNKNOWN_ACCOUNT] for the rest. */
+    val byAccount: Map<String, CallTotals> = emptyMap(),
+) {
+    /** The figure for one account, or zero when it has served nothing. */
+    fun of(accountId: String): CallTotals = byAccount[accountId] ?: CallTotals()
+
+    /** Every account added together. */
+    val total: CallTotals get() = byAccount.values.fold(CallTotals()) { acc, next -> acc + next }
+
+    /** Folds one call into its account's figures. */
+    fun plus(record: CallRecord): AccountTotals {
+        val key = record.accountId
+        return copy(byAccount = byAccount + (key to of(key).plus(record)))
+    }
 }
 
 /**
@@ -82,19 +135,46 @@ class CallLogStore(private val context: Context) {
     private val totalsFile = File(context.filesDir, "wb-call-totals.json")
     private val lock = Any()
 
-    /** Reads the running totals; an absent file means nothing has been served. */
-    fun totals(): CallTotals {
-        if (!totalsFile.exists()) return CallTotals()
+    /**
+     * Reads the running totals per account.
+     *
+     * The older format held one flat object for every call; it is read as the
+     * unknown-account bucket so existing installs keep their figures.
+     */
+    fun totals(): AccountTotals {
+        if (!totalsFile.exists()) return AccountTotals()
         return runCatching {
             val json = JSONObject(totalsFile.readText())
-            CallTotals(
-                calls = json.optInt("calls"),
-                failures = json.optInt("failures"),
-                promptTokens = json.optLong("prompt"),
-                completionTokens = json.optLong("completion"),
-                credits = json.optDouble("credits", 0.0),
-            )
-        }.getOrDefault(CallTotals())
+            val accounts = json.optJSONObject("accounts")
+            if (accounts == null) {
+                return@runCatching AccountTotals(
+                    mapOf(CallTotals.UNKNOWN_ACCOUNT to readTotals(json)),
+                )
+            }
+            val byAccount = mutableMapOf<String, CallTotals>()
+            val keys = accounts.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                accounts.optJSONObject(key)?.let { byAccount[key] = readTotals(it) }
+            }
+            AccountTotals(byAccount)
+        }.getOrDefault(AccountTotals())
+    }
+
+    private fun readTotals(json: JSONObject) = CallTotals(
+        calls = json.optInt("calls"),
+        failures = json.optInt("failures"),
+        promptTokens = json.optLong("prompt"),
+        completionTokens = json.optLong("completion"),
+        credits = json.optDouble("credits", 0.0),
+    )
+
+    private fun writeTotals(totals: CallTotals) = JSONObject().apply {
+        put("calls", totals.calls)
+        put("failures", totals.failures)
+        put("prompt", totals.promptTokens)
+        put("completion", totals.completionTokens)
+        put("credits", totals.credits)
     }
 
     /**
@@ -156,6 +236,9 @@ class CallLogStore(private val context: Context) {
                     credits = item.optDouble("credits", 0.0),
                     detail = item.optString("detail"),
                     sourceIp = item.optString("sourceIp"),
+                    accountId = item.optString("accountId"),
+                    accountLabel = item.optString("accountLabel"),
+                    multiplier = item.optDouble("multiplier", -1.0),
                 )
             }
         }.getOrDefault(emptyList())
@@ -180,11 +263,11 @@ class CallLogStore(private val context: Context) {
                 val next = totals().plus(record)
                 totalsFile.writeText(
                     JSONObject().apply {
-                        put("calls", next.calls)
-                        put("failures", next.failures)
-                        put("prompt", next.promptTokens)
-                        put("completion", next.completionTokens)
-                        put("credits", next.credits)
+                        put("accounts", JSONObject().apply {
+                            next.byAccount.forEach { (id, figures) ->
+                                put(id, writeTotals(figures))
+                            }
+                        })
                     }.toString(),
                 )
             }
@@ -205,6 +288,9 @@ class CallLogStore(private val context: Context) {
                     put("credits", entry.credits)
                     put("detail", entry.detail)
                     if (entry.sourceIp.isNotEmpty()) put("sourceIp", entry.sourceIp)
+                    if (entry.accountId.isNotEmpty()) put("accountId", entry.accountId)
+                    if (entry.accountLabel.isNotEmpty()) put("accountLabel", entry.accountLabel)
+                    if (entry.multiplier >= 0) put("multiplier", entry.multiplier)
                 },
             )
         }

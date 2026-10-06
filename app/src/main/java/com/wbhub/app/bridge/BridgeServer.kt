@@ -35,6 +35,8 @@ class BridgeServer(
     private val lanKey: String,
     private val credential: () -> Credential?,
     private val models: () -> List<String>,
+    /** Price multiplier for a model id, or -1 when it is not listed. */
+    private val multiplierOf: (String) -> Double = { -1.0 },
     /**
      * Whether to serve the local network as well as this device.
      *
@@ -232,6 +234,9 @@ class BridgeServer(
                         outcome = CallRecord.Outcome.FAILED,
                         detail = "${result.kind.name.lowercase()}: $detail".take(120),
                         sourceIp = sourceIp,
+                        accountId = cred.accountId,
+                        accountLabel = cred.nickname,
+                        multiplier = multiplierOf(model),
                     ),
                 )
                 sendJson(
@@ -252,6 +257,9 @@ class BridgeServer(
                             completionTokens = usage.completion,
                             credits = usage.credits,
                             sourceIp = sourceIp,
+                            accountId = cred.accountId,
+                            accountLabel = cred.nickname,
+                            multiplier = multiplierOf(model),
                         ),
                     )
                 } finally {

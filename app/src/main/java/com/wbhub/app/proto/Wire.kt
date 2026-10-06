@@ -483,6 +483,14 @@ data class Credential(
     val nickname: String = "",
     val enterpriseId: String? = null,
     val source: String = "oauth",
+    /**
+     * Which saved account this is.
+     *
+     * Carried so a call can be attributed to the account that served it: the
+     * bridge picks an account per request, and usage split by account is only
+     * possible if that choice is visible where the call is recorded.
+     */
+    val accountId: String = "",
 ) {
     val region: Wire.Region get() = Wire.regionOf(domain)
 }

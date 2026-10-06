@@ -197,6 +197,8 @@ class MainActivity : ComponentActivity() {
                 onLogout = { state = state.copy(showLogoutConfirm = true) },
                 onClearCalls = { clearCalls() },
                 onOpenCallSettings = { state = state.copy(showCallSettings = true) },
+                onOpenModelStats = { state = state.copy(showModelStats = true) },
+                onDismissModelStats = { state = state.copy(showModelStats = false) },
                 onDismissCallSettings = { state = state.copy(showCallSettings = false) },
                 onCallLimitChange = { limit ->
                     BridgeSettings.setCallLogLimit(this, limit)
@@ -1016,7 +1018,7 @@ class MainActivity : ComponentActivity() {
         val limit = BridgeSettings.callLogLimit(this)
         state = state.copy(
             calls = callLog.load(),
-            callTotals = callLog.totals(),
+            accountTotals = callLog.totals(),
             callLogLimit = limit,
             callLogBytes = callLog.estimatedBytes(limit),
         )
