@@ -68,27 +68,50 @@ jobs:
 
       - name: Report signing state
         run: |
-          APK=app/build/outputs/apk/release/app-release.apk
-          if [ ! -f "$APK" ]; then
+          shopt -s nullglob
+          APKS=(app/build/outputs/apk/release/*.apk)
+          if [ ${#APKS[@]} -eq 0 ]; then
             echo "::error::release APK was not produced"
             exit 1
           fi
-          if apksigner verify --print-certs "$APK" >/dev/null 2>&1; then
-            echo "release APK is signed" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::warning::release APK is unsigned (no signing secrets configured)"
-          fi
+          for APK in "${APKS[@]}"; do
+            echo "produced: $APK"
+            # apksigner exits non-zero on an unsigned APK, which is a fine
+            # outcome here: it just means no signing secrets are configured.
+            if apksigner verify "$APK" >/dev/null 2>&1; then
+              echo "- \`$APK\` — signed" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::$APK is unsigned (signing secrets are not configured)"
+              echo "- \`$APK\` — **unsigned**, cannot be installed until signed" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+      - name: Bring artifact names up to date
+        run: |
+          # The name carries the version and short commit so several downloaded
+          # builds stay distinguishable.
+          VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          SHA=$(git rev-parse --short HEAD)
+          shopt -s nullglob
+          for APK in app/build/outputs/apk/debug/*.apk; do
+            cp "$APK" "app/build/outputs/apk/debug/wb-hub-${VERSION}-${SHA}-debug.apk"
+          done
+          for APK in app/build/outputs/apk/release/*.apk; do
+            SUFFIX=""
+            case "$APK" in *-unsigned.apk) SUFFIX="-unsigned";; esac
+            cp "$APK" "app/build/outputs/apk/release/wb-hub-${VERSION}-${SHA}-release${SUFFIX}.apk"
+          done
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: wb-hub-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/wb-hub-*.apk
           if-no-files-found: error
 
       - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
           name: wb-hub-release
-          path: app/build/outputs/apk/release/*.apk
+          path: app/build/outputs/apk/release/wb-hub-*.apk
           if-no-files-found: error
