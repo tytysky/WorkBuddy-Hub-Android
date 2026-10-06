@@ -158,6 +158,8 @@ class MainActivity : ComponentActivity() {
         )
         val lanOn = BridgeSettings.lanEnabled(this)
         state = state.copy(
+            port = BridgeSettings.port(this),
+            secret = BridgeSettings.apiKey(this),
             lanKey = BridgeSettings.lanKey(this),
             lanEnabled = lanOn,
             lanAddresses = if (lanOn) LanAddresses.current() else emptyList(),
@@ -191,7 +193,13 @@ class MainActivity : ComponentActivity() {
         setContent {
             HubApp(
                 state = state,
-                onStartBridge = { port -> startBridge(port) },
+                onStartBridge = { port ->
+                    // Persisted before starting, so a restart lands on the same
+                    // port the client was configured against.
+                    BridgeSettings.setPort(this, port)
+                    state = state.copy(port = BridgeSettings.port(this))
+                    startBridge(state.port)
+                },
                 onStopBridge = { stopBridge() },
                 onLogin = { region -> startLogin(region) },
                 onLogout = { state = state.copy(showLogoutConfirm = true) },
@@ -233,9 +241,13 @@ class MainActivity : ComponentActivity() {
                 onCheckin = { doCheckin() },
                 onCheckinAll = { checkinAllAccounts() },
                 onRefreshBalance = { loadBalance() },
-                onSaveKey = {
-                    // The local key is fixed, so there is nothing to save; the
-                    // handler stays so the screen compiles without a branch.
+                onSaveKey = { key ->
+                    BridgeSettings.setApiKey(this, key)
+                    state = state.copy(secret = BridgeSettings.apiKey(this))
+                    // The listener holds the key it started with, so it has to
+                    // be rebuilt for the change to apply.
+                    service?.restartBridge()
+                    toast("已更新密钥")
                 },
                 onToggleLan = { enabled ->
                     BridgeSettings.setLanEnabled(this, enabled)

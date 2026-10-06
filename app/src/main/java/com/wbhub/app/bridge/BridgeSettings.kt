@@ -28,6 +28,7 @@ object BridgeSettings {
     private const val KEY_BURN_IN = "burn_in_enabled"
     private const val KEY_BURN_IN_INTERVAL = "burn_in_interval_ms"
     private const val KEY_CALL_LIMIT = "call_log_limit"
+    private const val KEY_PORT = "port"
 
     /**
      * Whether the panel is replaced by a small dot.
@@ -160,6 +161,45 @@ object BridgeSettings {
      * device and there is nothing to gain from rotating it.
      */
     const val DEFAULT_API_KEY = "wb-local"
+
+    /**
+     * The key local clients present.
+     *
+     * Stored rather than fixed so a user can rotate it; the default keeps a
+     * fresh install usable without visiting this screen.
+     */
+    fun apiKey(context: Context): String =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_API_KEY, "")
+            ?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_API_KEY
+
+    fun setApiKey(context: Context, value: String) {
+        val trimmed = value.trim().ifBlank { DEFAULT_API_KEY }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putString(KEY_API_KEY, trimmed).apply()
+    }
+
+    /**
+     * Port the bridge listens on.
+     *
+     * Persisted so a restart keeps the chosen port: a client configured against
+     * it would otherwise break every time the app is reopened.
+     */
+    fun port(context: Context): Int = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        .getInt(KEY_PORT, DEFAULT_PORT)
+        .coerceIn(MIN_PORT, MAX_PORT)
+
+    fun setPort(context: Context, value: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putInt(KEY_PORT, value.coerceIn(MIN_PORT, MAX_PORT)).apply()
+    }
+
+    const val DEFAULT_PORT = 8765
+
+    /** Ports below 1024 need privileges, above 65535 do not exist. */
+    const val MIN_PORT = 1024
+    const val MAX_PORT = 65535
 
     /**
      * The key peers on the local network must present.

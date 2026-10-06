@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -344,6 +345,7 @@ fun BridgeScreen(
     onSaveKey: (String) -> Unit,
     onToggleLan: (Boolean) -> Unit,
     onSaveLanKey: (String) -> Unit,
+    onCopyField: (String, String) -> Unit,
     onToggleStealth: (Boolean) -> Unit,
     onDotColor: (Int) -> Unit,
     onDotSize: (Int) -> Unit,
@@ -354,8 +356,9 @@ fun BridgeScreen(
     onAdjustDot: (Boolean) -> Unit,
 ) {
     var portText by remember(state.port) { mutableStateOf(state.port.toString()) }
-    // The key field is local state so editing does not rewrite the running
-    // server's key on every keystroke.
+    // The key fields are local state so editing does not rewrite the running
+    // server's keys on every keystroke.
+    var keyText by remember(state.secret) { mutableStateOf(state.secret) }
     var lanKeyText by remember(state.lanKey) { mutableStateOf(state.lanKey) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -417,10 +420,31 @@ fun BridgeScreen(
                     )
                     if (state.bridgeRunning) {
                         LinearWavyProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            FilledTonalButton(onClick = onCopyEndpoint) { Text("复制接入信息") }
-                            FilledTonalButton(onClick = onStop) { Text("停止") }
-                        }
+                    }
+                }
+            }
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), Arrangement.spacedBy(10.dp)) {
+                    Text("本机密钥", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "本机客户端（含内置对话）用它调用端点，与局域网密钥互相独立。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = keyText,
+                        onValueChange = { keyText = it },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilledTonalButton(
+                            onClick = { onSaveKey(keyText) },
+                            enabled = keyText.isNotBlank() && keyText != state.secret,
+                        ) { Text("保存") }
+                        FilledTonalButton(onClick = { keyText = randomKey() }) { Text("随机生成") }
                     }
                 }
             }
@@ -476,6 +500,37 @@ fun BridgeScreen(
                             color = MaterialTheme.colorScheme.error,
                         )
                     }
+                }
+            }
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "接入方式",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(onClick = onShowHelp) {
+                            Icon(
+                                Icons.Default.HelpOutline,
+                                contentDescription = "接入帮助",
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                    EndpointRow(
+                        label = "baseUrl",
+                        value = "http://127.0.0.1:${state.port}/v1",
+                        onCopy = onCopyEndpoint,
+                    )
+                    EndpointRow(
+                        label = "apiKey",
+                        value = state.secret,
+                        onCopy = { onCopyField("apiKey", state.secret) },
+                    )
                 }
             }
         }
@@ -579,29 +634,6 @@ fun BridgeScreen(
                             )
                         }
                     }
-                }
-            }
-        }
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), Arrangement.spacedBy(6.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "接入方式",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.weight(1f),
-                        )
-                        IconButton(onClick = onShowHelp) {
-                            Icon(
-                                Icons.Default.HelpOutline,
-                                contentDescription = "接入帮助",
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                    }
-                    Text("baseUrl: http://127.0.0.1:${state.port}/v1")
-                    Text("apiKey: ${state.secret}")
                 }
             }
         }
@@ -1597,6 +1629,40 @@ private fun sliderToCallLimit(value: Float): Int {
         else -> 1_000
     }
     return ((raw / step).roundToInt() * step).coerceIn(100, 100_000)
+}
+
+/**
+ * One piece of connection information with a copy button.
+ *
+ * The values are what a user pastes into a client, so the copy action sits on
+ * the row itself rather than in a separate button that copies both at once:
+ * clients want one or the other, and a combined blob needs editing afterwards.
+ */
+@Composable
+private fun EndpointRow(label: String, value: String, onCopy: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                value,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconButton(onClick = onCopy) {
+            Icon(
+                Icons.Default.ContentCopy,
+                contentDescription = "复制 $label",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
 }
 
 /** Human-readable size for the history estimate. */

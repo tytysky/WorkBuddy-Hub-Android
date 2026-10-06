@@ -66,8 +66,12 @@ class BridgeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        port = intent?.getIntExtra(EXTRA_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
-        apiKey = BridgeSettings.DEFAULT_API_KEY
+        // The intent value wins when it is present, so an explicit start from
+        // the settings screen takes effect; the stored port is the fallback for
+        // a service the system restarts on its own.
+        port = intent?.getIntExtra(EXTRA_PORT, 0)?.takeIf { it > 0 }
+            ?: BridgeSettings.port(this)
+        apiKey = BridgeSettings.apiKey(this)
         promoteToForeground()
         acquireWakeLock()
         BridgeStatus.reset(port)

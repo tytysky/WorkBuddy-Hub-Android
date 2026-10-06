@@ -1,5 +1,12 @@
 package com.wbhub.app.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -131,12 +138,34 @@ fun HubApp(
                     }
                 },
             ) { padding ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding),
-                ) {
-                    when (HubTab.entries[tab]) {
+                Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+                // Pages slide in the direction the tabs were traversed, so
+                // moving right and moving left look different. The curves come
+                // from the expressive motion scheme rather than a plain tween,
+                // which is what keeps the movement from feeling mechanical.
+                AnimatedContent(
+                    targetState = HubTab.entries[tab],
+                    transitionSpec = {
+                        val forward = targetState.ordinal > initialState.ordinal
+                        val spec = MotionScheme.expressive()
+                        val enter = slideInHorizontally(
+                            animationSpec = spec.defaultSpatialSpec(),
+                            initialOffsetX = { width -> if (forward) width / 5 else -width / 5 },
+                        ) + fadeIn(animationSpec = spec.defaultEffectsSpec())
+                        val exit = slideOutHorizontally(
+                            animationSpec = spec.defaultSpatialSpec(),
+                            targetOffsetX = { width -> if (forward) -width / 5 else width / 5 },
+                        ) + fadeOut(animationSpec = spec.defaultEffectsSpec())
+                        // The directions are swapped so the leaving page and the
+                        // arriving one move as a pair rather than colliding.
+                        (enter togetherWith exit).apply {
+                            targetContentZIndex = if (forward) 1f else -1f
+                        }
+                    },
+                    label = "tab",
+                    modifier = Modifier.fillMaxSize(),
+                ) { current ->
+                    when (current) {
                         HubTab.Credential -> CredentialScreen(
                             state = state,
                             onSwitchRealm = onSwitchRealm,
@@ -161,6 +190,7 @@ fun HubApp(
                             onOverlayLocked = onOverlayLocked,
                             onSaveKey = onSaveKey,
                             onToggleLan = onToggleLan,
+                            onCopyField = onCopyField,
                             onSaveLanKey = onSaveLanKey,
                             onToggleStealth = onToggleStealth,
                             onDotColor = onDotColor,
@@ -205,6 +235,7 @@ fun HubApp(
                             onNightOwl = onNightOwl,
                         )
                     }
+                }
                 }
             }
         }
