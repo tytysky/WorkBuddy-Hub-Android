@@ -143,7 +143,7 @@ class BridgeOverlay(
                 hide()
                 show()
             }
-            needsRepaint -> paintDot(1f)
+            needsRepaint -> paintDot()
         }
         // An invisible dot burns nothing in, so the cycle is pointless; it also
         // stops and restarts when the opacity changes either way.
@@ -217,33 +217,36 @@ class BridgeOverlay(
         if (count == lastSeenCount) return
         lastSeenCount = count
         if (dotView == null) return
-        // The blink repaints the shape at a lower alpha and back. Fading the
-        // view instead would compound with the alpha baked into the colour, and
-        // every blink would end slightly darker than it started.
         blink?.cancel()
-        blink = android.animation.ValueAnimator.ofFloat(1f, BLINK_DIM, 1f).apply {
+        // The blink animates the dot's actual opacity rather than a multiplier,
+        // because at zero there is nothing to multiply: a dot the user set to
+        // invisible has to rise towards visible and settle back to nothing.
+        // Its peak is transient and never becomes the configured value.
+        val peak = if (dotAlpha <= 0.01f) BLINK_PEAK_INVISIBLE else dotAlpha
+        val trough = if (dotAlpha <= 0.01f) 0f else dotAlpha * BLINK_DIM
+        blink = android.animation.ValueAnimator.ofFloat(peak, trough, peak).apply {
             duration = BLINK_MS
             addUpdateListener { animator ->
-                paintDot((animator.animatedValue as Float))
+                paintAlpha(animator.animatedValue as Float)
             }
             addListener(object : android.animation.AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: android.animation.Animator) {
                     // Restoring explicitly covers cancellation, which skips the
-                    // final update and would otherwise leave it dimmed.
-                    paintDot(1f)
+                    // final frame and would otherwise leave the dot dimmed.
+                    paintAlpha(dotAlpha)
                 }
             })
             start()
         }
     }
 
-    /** Redraws the dot at [factor] times its configured opacity. */
-    private fun paintDot(factor: Float) {
+    /** Redraws the dot at the configured opacity. */
+    private fun paintDot() = paintAlpha(dotAlpha)
+
+    /** Redraws the dot at an absolute [alpha]. */
+    private fun paintAlpha(alpha: Float) {
         val drawable = dotDrawable ?: return
-        // A dot set to invisible still has to be able to signal, so its blink
-        // rises towards visible instead of fading from somewhere it never was.
-        val base = if (dotAlpha <= 0.01f) 0.5f else dotAlpha
-        val color = withAlpha(dotColor, (base * factor).coerceIn(0f, 1f))
+        val color = withAlpha(dotColor, alpha.coerceIn(0f, 1f))
         when (dotShape) {
             DotShape.FILLED -> drawable.setColor(color)
             DotShape.RING -> {
@@ -623,6 +626,14 @@ class BridgeOverlay(
 
         /** How far the blink dips; a full fade reads as a disappearance. */
         const val BLINK_DIM = 0.2f
+
+        /**
+         * How bright an invisible dot's blink rises to.
+         *
+         * The value is a transient peak, never written back to the configured
+         * opacity, so the dot returns to invisible once the blink ends.
+         */
+        const val BLINK_PEAK_INVISIBLE = 0.5f
 
         /** Half of a fade-out/fade-in pair. */
         const val FADE_MS = 150L
