@@ -410,6 +410,11 @@ fun ProtoModel.toHubModel(): HubModel = HubModel(
     supportsReasoning = reasoning.supports,
     contextWindow = contextWindow,
     badges = badges,
+    // Carried through so the agent page can offer exactly the levels the model
+    // accepts rather than a guessed list.
+    efforts = reasoning.supportedEfforts,
+    defaultEffort = reasoning.defaultEffort,
+    canDisableThinking = reasoning.canDisableThinking,
 )
 
 /**
@@ -437,11 +442,17 @@ data class HubModel(
     val supportsReasoning: Boolean = false,
     val contextWindow: Int = 0,
     val badges: List<String> = emptyList(),
+    val efforts: List<String> = emptyList(),
+    val defaultEffort: String? = null,
+    val canDisableThinking: Boolean = false,
 ) {
     val isFree: Boolean get() = multiplier == 0.0
 
     /** Sort key: free first, then cheapest. */
     val sortKey: Double get() = if (multiplier < 0) 999.0 else multiplier
+
+    /** Whether this model accepts a thinking-effort setting at all. */
+    val supportsEffort: Boolean get() = efforts.isNotEmpty()
 }
 
 /**

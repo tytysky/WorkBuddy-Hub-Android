@@ -24,13 +24,18 @@ import com.wbhub.app.bridge.Notifications
 import com.wbhub.app.data.CheckinItem
 import com.wbhub.app.data.Login
 import com.wbhub.app.proto.AutoTaskRunner
+import com.wbhub.app.agent.AgentClient
+import com.wbhub.app.agent.AgentTools
 import com.wbhub.app.proto.CheckinOutcome
 import com.wbhub.app.proto.Credential
 import com.wbhub.app.proto.CredentialStore
 import com.wbhub.app.proto.UpstreamClient
 import com.wbhub.app.proto.Wire
 import com.wbhub.app.proto.toHubModel
+import com.wbhub.app.ui.AgentEntry
+import com.wbhub.app.ui.AgentState
 import com.wbhub.app.ui.CheckinDialog
+import com.wbhub.app.ui.EFFORT_OFF
 import com.wbhub.app.ui.HubApp
 import com.wbhub.app.ui.Loading
 import com.wbhub.app.ui.LogoutDialog
@@ -44,6 +49,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -58,6 +64,9 @@ class MainActivity : ComponentActivity() {
 
     private var state by mutableStateOf(HubState())
     private var showHelp by mutableStateOf(false)
+
+    /** The agent page keeps its own transcript and settings. */
+    private var agent by mutableStateOf(AgentState())
     private var askedForNotifications = false
     private val upstream = UpstreamClient()
 
@@ -66,6 +75,21 @@ class MainActivity : ComponentActivity() {
      * so re-running it on every check-in cannot duplicate rewards.
      */
     private val autoTask = AutoTaskRunner()
+
+    private val agentClient = AgentClient()
+
+    /**
+     * The exchange so far, kept in the shape the model needs. The visible
+     * transcript is a rendering of it, not a substitute: tool calls and their
+     * results only exist here.
+     */
+    private var lastAgentTranscript: List<AgentClient.Message> = emptyList()
+
+    /** A login session survives the agent request, so it is not lifecycle-bound. */
+    private val agentScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /** Delivers streamed agent events to the main thread. */
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     /**
      * Sign-in polling must survive the app leaving the foreground, because the
@@ -95,6 +119,9 @@ class MainActivity : ComponentActivity() {
             notificationsAllowed = granted,
             status = if (granted) "" else "未授予通知权限，转发服务可能被系统回收",
         )
+        // The same launcher serves the agent's storage request on older
+        // releases, so the switch is re-read rather than assumed.
+        agent = agent.copy(storageGranted = hasAllFilesAccess())
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -114,6 +141,7 @@ class MainActivity : ComponentActivity() {
             overlayOpacity = BridgeSettings.opacity(this),
             overlayLocked = BridgeSettings.locked(this),
         )
+        agent = agent.copy(storageGranted = hasAllFilesAccess())
         // Starting the bridge from the foreground is what makes the foreground
         // promotion legal; a later start from a background caller is refused.
         startBridge(state.port, silent = true)
@@ -152,6 +180,23 @@ class MainActivity : ComponentActivity() {
                 onActivityReport = { runActivityReport() },
                 onTravel = { runTravel() },
                 onNightOwl = { runNightOwl() },
+                onAgentInput = { value -> agent = agent.copy(input = value) },
+                onAgentSend = { sendAgentPrompt() },
+                onAgentSelectModel = { id ->
+                    // Switching models resets the effort: the accepted levels
+                    // differ per model, so keeping the old one could send an
+                    // unsupported value.
+                    val model = state.models.firstOrNull { it.id == id }
+                    agent = agent.copy(
+                        modelId = id,
+                        effort = model?.defaultEffort.orEmpty(),
+                    )
+                },
+                onAgentSelectEffort = { level -> agent = agent.copy(effort = level) },
+                onAgentToggleRoot = { enabled -> agent = agent.copy(useRoot = enabled) },
+                onAgentRequestStorage = { requestAllFilesAccess() },
+                onAgentClear = { clearAgent() },
+                agent = agent,
                 onCopyEndpoint = { copyEndpoint() },
                 onCopyModel = { id -> copyToClipboard(id, "已复制模型名") },
                 onRequestNotifications = { requestNotificationPermissionIfNeeded() },
@@ -174,6 +219,9 @@ class MainActivity : ComponentActivity() {
         }
 
         requestNotificationPermissionIfNeeded()
+        // The agent's shell works on real files, so the storage switch is asked
+        // for up front rather than only when the agent page is first opened.
+        if (!hasAllFilesAccess()) mainHandler.postDelayed({ requestAllFilesAccess() }, 800)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -195,6 +243,9 @@ class MainActivity : ComponentActivity() {
             batteryExempt = isIgnoringBatteryOptimizations(),
             overlayAllowed = canDrawOverlay(),
         )
+        // Storage access is granted on a system page, so the switch is only
+        // accurate after coming back from it.
+        agent = agent.copy(storageGranted = hasAllFilesAccess())
     }
 
     /**
@@ -320,6 +371,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
             state = state.copy(models = models)
+            // The agent needs a model chosen before it can send anything. The
+            // first catalogue row is a working default, and an existing choice
+            // is kept so a refresh does not reset it.
+            if (agent.modelId.isBlank() || models.none { it.id == agent.modelId }) {
+                val first = models.firstOrNull()
+                agent = agent.copy(
+                    modelId = first?.id.orEmpty(),
+                    effort = first?.defaultEffort.orEmpty(),
+                )
+            }
         }
     }
 
@@ -472,6 +533,102 @@ class MainActivity : ComponentActivity() {
 
     private fun runNightOwl() = runBonus("夜猫子", Loading.NIGHT) { autoTask.runNightOwl(it) }
 
+    // ------------------------------------------------------------------ //
+    // Agent
+    // ------------------------------------------------------------------ //
+
+    /**
+     * Sends one prompt to the agent and streams the answer into the transcript.
+     *
+     * The whole loop runs on a background dispatcher; the transcript is only
+     * touched on the main thread, one event at a time.
+     */
+    private fun sendAgentPrompt() {
+        val credential = state.credential
+        if (credential == null) {
+            agent = agent.copy(entries = agent.entries + AgentEntry(AgentEntry.Role.ERROR, "请先在「凭证」页登录"))
+            return
+        }
+        if (agent.modelId.isBlank()) {
+            agent = agent.copy(entries = agent.entries + AgentEntry(AgentEntry.Role.ERROR, "请先选择模型"))
+            return
+        }
+        val prompt = agent.input.trim()
+        if (prompt.isEmpty() || agent.running) return
+
+        val workDir = File(agent.workDir).apply { if (!exists()) mkdirs() }
+        val tools = AgentTools(
+            context = this,
+            workDir = workDir,
+            useRoot = agent.useRoot,
+        )
+        agent = agent.copy(
+            input = "",
+            running = true,
+            entries = agent.entries + AgentEntry(AgentEntry.Role.USER, prompt),
+        )
+
+        agentScope.launch {
+            val history = agentHistory()
+            val transcript = withContext(Dispatchers.IO) {
+                agentClient.run(
+                    credential = credential,
+                    history = history,
+                    prompt = prompt,
+                    modelId = agent.modelId,
+                    effort = agent.effort.takeIf { it.isNotBlank() }?.takeIf { it != EFFORT_OFF },
+                    tools = tools,
+                ) { event ->
+                    // The client calls this from its own thread and cannot
+                    // suspend, so the update is posted to the main thread and
+                    // the worker moves on without waiting for it.
+                    mainHandler.post { applyAgentEvent(event) }
+                }
+            }
+            agent = agent.copy(running = false)
+            // Rebuild the fetchable history from what was actually exchanged.
+            lastAgentTranscript = transcript
+        }
+    }
+
+    /** Folds one streamed event into the visible transcript. */
+    private fun applyAgentEvent(event: AgentClient.Event) {
+        val entries = agent.entries.toMutableList()
+        when (event) {
+            is AgentClient.Event.Text -> appendStreaming(entries, AgentEntry.Role.ASSISTANT, event.delta)
+            is AgentClient.Event.Reasoning -> appendStreaming(entries, AgentEntry.Role.REASONING, event.delta)
+            is AgentClient.Event.ToolStart -> entries += AgentEntry(AgentEntry.Role.TOOL, "▶ ${event.name}")
+            is AgentClient.Event.ToolEnd ->
+                entries += AgentEntry(AgentEntry.Role.TOOL, "◀ ${event.name}：${event.summary}")
+            is AgentClient.Event.Failure -> entries += AgentEntry(AgentEntry.Role.ERROR, event.message)
+            AgentClient.Event.Done -> Unit
+        }
+        agent = agent.copy(entries = entries)
+    }
+
+    /**
+     * Appends a streamed fragment to the line it belongs to.
+     *
+     * Deltas arrive token by token, so consecutive fragments of the same role
+     * extend the last entry rather than starting a new one.
+     */
+    private fun appendStreaming(entries: MutableList<AgentEntry>, role: AgentEntry.Role, delta: String) {
+        val last = entries.lastOrNull()
+        if (last != null && last.role == role) {
+            entries[entries.lastIndex] = last.copy(text = last.text + delta)
+        } else {
+            entries += AgentEntry(role, delta)
+        }
+    }
+
+    /** Rebuilds the conversation the next prompt should carry. */
+    private fun agentHistory(): List<AgentClient.Message> = lastAgentTranscript
+
+    private fun clearAgent() {
+        lastAgentTranscript = emptyList()
+        agent = agent.copy(entries = emptyList())
+    }
+
     private fun loadBalance() {
         val cred = state.credential
         if (cred == null) {
@@ -530,6 +687,42 @@ class MainActivity : ComponentActivity() {
     private fun canDrawOverlay(): Boolean = android.provider.Settings.canDrawOverlays(this)
 
     /** Opens the system screen where the user grants overlay permission. */
+    /**
+     * Opens the all-files access page.
+     *
+     * Android 11 replaced the storage permissions with a per-app switch, so the
+     * legacy runtime request no longer covers the agent's need to reach shared
+     * storage; the user has to flip this one by hand.
+     */
+    private fun requestAllFilesAccess() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                startActivity(
+                    Intent(
+                        android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        android.net.Uri.parse("package:$packageName"),
+                    ),
+                )
+            }.onFailure {
+                // The per-app page is not on every build; the global list is.
+                runCatching {
+                    startActivity(Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                }.onFailure { toast("请在系统设置中授予文件访问权限") }
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            permissionLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
+    }
+
+    /** Whether broad storage access is currently granted. */
+    private fun hasAllFilesAccess(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            android.os.Environment.isExternalStorageManager()
+        } else {
+            checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+
     private fun requestOverlayPermission() {
         runCatching {
             startActivity(

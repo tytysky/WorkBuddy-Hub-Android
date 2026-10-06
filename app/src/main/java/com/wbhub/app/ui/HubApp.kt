@@ -53,6 +53,14 @@ fun HubApp(
     onActivityReport: () -> Unit,
     onTravel: () -> Unit,
     onNightOwl: () -> Unit,
+    onAgentInput: (String) -> Unit,
+    onAgentSend: () -> Unit,
+    onAgentSelectModel: (String) -> Unit,
+    onAgentSelectEffort: (String) -> Unit,
+    onAgentToggleRoot: (Boolean) -> Unit,
+    onAgentRequestStorage: () -> Unit,
+    onAgentClear: () -> Unit,
+    agent: AgentState,
     onCopyEndpoint: () -> Unit,
     onCopyModel: (String) -> Unit,
     onRequestNotifications: () -> Unit,
@@ -128,6 +136,17 @@ fun HubApp(
                             onRequestOverlay = onRequestOverlay,
                             onOverlayOpacity = onOverlayOpacity,
                             onOverlayLocked = onOverlayLocked,
+                        )
+                        HubTab.Agent -> AgentScreen(
+                            agent = agent,
+                            models = state.models,
+                            onInputChange = onAgentInput,
+                            onSend = onAgentSend,
+                            onSelectModel = onAgentSelectModel,
+                            onSelectEffort = onAgentSelectEffort,
+                            onToggleRoot = onAgentToggleRoot,
+                            onRequestStorage = onAgentRequestStorage,
+                            onClear = onAgentClear,
                         )
                         HubTab.Calls -> CallsScreen(state, onClearCalls, onRefreshCalls)
                         HubTab.Rewards -> RewardsScreen(
