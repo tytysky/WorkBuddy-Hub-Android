@@ -25,7 +25,9 @@ import com.wbhub.app.data.CheckinItem
 import com.wbhub.app.data.Login
 import com.wbhub.app.proto.AutoTaskRunner
 import com.wbhub.app.agent.AgentClient
+import com.wbhub.app.agent.AgentStore
 import com.wbhub.app.agent.AgentTools
+import com.wbhub.app.agent.ApprovalMode
 import com.wbhub.app.proto.CheckinOutcome
 import com.wbhub.app.proto.Credential
 import com.wbhub.app.proto.CredentialStore
@@ -53,6 +55,8 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity() {
 
@@ -77,6 +81,15 @@ class MainActivity : ComponentActivity() {
     private val autoTask = AutoTaskRunner()
 
     private val agentClient = AgentClient()
+
+    /** Settings and saved conversations for the agent page. */
+    private lateinit var agentStore: AgentStore
+
+    /**
+     * Carries an approval answer from the dialog back to the worker thread that
+     * is blocked waiting for it.
+     */
+    private val approvalAnswer = LinkedBlockingQueue<Boolean>()
 
     /**
      * The exchange so far, kept in the shape the model needs. The visible
@@ -128,6 +141,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         store = CredentialStore(this)
         callLog = CallLogStore(this)
+        agentStore = AgentStore(this)
         Notifications.ensureChannel(this)
         refreshCredential()
         // Keep the daemon's credential copy current, including the first run
@@ -141,7 +155,21 @@ class MainActivity : ComponentActivity() {
             overlayOpacity = BridgeSettings.opacity(this),
             overlayLocked = BridgeSettings.locked(this),
         )
-        agent = agent.copy(storageGranted = hasAllFilesAccess())
+        // Restored before the model catalogue arrives; a stored model that no
+        // longer exists is replaced once the catalogue does.
+        agent = agent.copy(
+            storageGranted = hasAllFilesAccess(),
+            modelId = agentStore.modelId(),
+            effort = agentStore.effort(),
+            contextWindow = agentStore.contextWindow(),
+            exposeRoot = agentStore.exposeRoot(),
+            workDir = agentStore.workDir().ifEmpty { agent.workDir },
+            approval = agentStore.approval(),
+            sessions = agentStore.sessions(),
+        )
+        // Root is probed rather than assumed: the switch is meaningless on a
+        // device that never grants it.
+        checkRootAvailability()
         // Starting the bridge from the foreground is what makes the foreground
         // promotion legal; a later start from a background caller is refused.
         startBridge(state.port, silent = true)
@@ -183,19 +211,38 @@ class MainActivity : ComponentActivity() {
                 onAgentInput = { value -> agent = agent.copy(input = value) },
                 onAgentSend = { sendAgentPrompt() },
                 onAgentSelectModel = { id ->
-                    // Switching models resets the effort: the accepted levels
-                    // differ per model, so keeping the old one could send an
-                    // unsupported value.
+                    // Switching models resets the effort and context: the
+                    // accepted levels and lengths differ per model, so keeping
+                    // the old values could send unsupported ones.
                     val model = state.models.firstOrNull { it.id == id }
-                    agent = agent.copy(
-                        modelId = id,
-                        effort = model?.defaultEffort.orEmpty(),
-                    )
+                    agentStore.setModelId(id)
+                    val effort = model?.defaultEffort.orEmpty()
+                    val context = model?.contextWindow ?: 0
+                    agentStore.setEffort(effort)
+                    agentStore.setContextWindow(context)
+                    agent = agent.copy(modelId = id, effort = effort, contextWindow = context)
                 },
-                onAgentSelectEffort = { level -> agent = agent.copy(effort = level) },
-                onAgentToggleRoot = { enabled -> agent = agent.copy(useRoot = enabled) },
+                onAgentSelectEffort = { level ->
+                    agentStore.setEffort(level)
+                    agent = agent.copy(effort = level)
+                },
+                onAgentSelectContext = { tokens ->
+                    agentStore.setContextWindow(tokens)
+                    agent = agent.copy(contextWindow = tokens)
+                },
+                onAgentToggleRoot = { enabled ->
+                    agentStore.setExposeRoot(enabled)
+                    agent = agent.copy(exposeRoot = enabled)
+                },
+                onAgentSelectApproval = { mode ->
+                    agentStore.setApproval(mode)
+                    agent = agent.copy(approval = mode)
+                },
+                onAgentAnswerApproval = { allow -> answerApproval(allow) },
                 onAgentRequestStorage = { requestAllFilesAccess() },
-                onAgentClear = { clearAgent() },
+                onAgentNewSession = { newAgentSession() },
+                onAgentOpenSession = { id -> openAgentSession(id) },
+                onAgentDeleteSession = { id -> deleteAgentSession(id) },
                 agent = agent,
                 onCopyEndpoint = { copyEndpoint() },
                 onCopyModel = { id -> copyToClipboard(id, "已复制模型名") },
@@ -374,11 +421,20 @@ class MainActivity : ComponentActivity() {
             // The agent needs a model chosen before it can send anything. The
             // first catalogue row is a working default, and an existing choice
             // is kept so a refresh does not reset it.
+            // A stored model that the catalogue no longer carries is replaced by
+            // the first one; either way the choice is written back so a restart
+            // keeps showing the same model.
             if (agent.modelId.isBlank() || models.none { it.id == agent.modelId }) {
                 val first = models.firstOrNull()
+                val effort = first?.defaultEffort.orEmpty()
+                val context = first?.contextWindow ?: 0
+                agentStore.setModelId(first?.id.orEmpty())
+                agentStore.setEffort(effort)
+                agentStore.setContextWindow(context)
                 agent = agent.copy(
                     modelId = first?.id.orEmpty(),
-                    effort = first?.defaultEffort.orEmpty(),
+                    effort = effort,
+                    contextWindow = context,
                 )
             }
         }
@@ -560,11 +616,17 @@ class MainActivity : ComponentActivity() {
         val tools = AgentTools(
             context = this,
             workDir = workDir,
-            useRoot = agent.useRoot,
+            useRoot = agent.exposeRoot,
         )
+        // A conversation is named after its first prompt, and gets its id at the
+        // same moment, so the picker has something to show before it finishes.
+        val sessionId = agent.sessionId.ifEmpty { "s${System.currentTimeMillis()}" }
+        val title = agent.sessionTitle.ifEmpty { agentStore.titleFor(prompt) }
         agent = agent.copy(
             input = "",
             running = true,
+            sessionId = sessionId,
+            sessionTitle = title,
             entries = agent.entries + AgentEntry(AgentEntry.Role.USER, prompt),
         )
 
@@ -577,7 +639,10 @@ class MainActivity : ComponentActivity() {
                     prompt = prompt,
                     modelId = agent.modelId,
                     effort = agent.effort.takeIf { it.isNotBlank() }?.takeIf { it != EFFORT_OFF },
+                    contextWindow = agent.contextWindow,
                     tools = tools,
+                    approval = agent.approval,
+                    ask = { summary -> requestApproval(summary) },
                 ) { event ->
                     // The client calls this from its own thread and cannot
                     // suspend, so the update is posted to the main thread and
@@ -586,9 +651,109 @@ class MainActivity : ComponentActivity() {
                 }
             }
             agent = agent.copy(running = false)
-            // Rebuild the fetchable history from what was actually exchanged.
             lastAgentTranscript = transcript
+            persistAgentSession()
         }
+    }
+
+    /**
+     * Shows the approval dialog and blocks until it is answered.
+     *
+     * Called from the worker thread running the tools, which is why it posts to
+     * the main thread and then waits: the alternative is threading a callback
+     * through the whole turn loop.
+     */
+    private fun requestApproval(summary: String): Boolean {
+        mainHandler.post { agent = agent.copy(pendingApproval = summary) }
+        // A bounded wait keeps a dismissed dialog from wedging the run forever;
+        // timing out counts as a refusal, which is the safe direction.
+        return runCatching { approvalAnswer.poll(5, TimeUnit.MINUTES) }.getOrNull() ?: false
+    }
+
+    /** Records the user's answer and releases the waiting worker. */
+    private fun answerApproval(allow: Boolean) {
+        agent = agent.copy(pendingApproval = null)
+        approvalAnswer.offer(allow)
+    }
+
+    /** Probes for root off the main thread, then enables the switch if granted. */
+    private fun checkRootAvailability() {
+        agentScope.launch {
+            val available = withContext(Dispatchers.IO) { AgentTools.detectRoot() }
+            agent = agent.copy(
+                rootAvailable = available,
+                // Losing root silently would leave the switch on while commands
+                // quietly ran unprivileged.
+                exposeRoot = agent.exposeRoot && available,
+            )
+        }
+    }
+
+    /**
+     * Writes the conversation to disk.
+     *
+     * Stored as the model-facing transcript plus its visible rendering: the
+     * first is what a follow-up needs, the second is what reopening should show,
+     * and they cannot be derived from each other once tools are involved.
+     */
+    private fun persistAgentSession() {
+        val id = agent.sessionId
+        if (id.isEmpty() || agent.entries.isEmpty()) return
+        val session = AgentStore.Session(
+            id = id,
+            title = agent.sessionTitle,
+            updatedAt = System.currentTimeMillis(),
+            messages = lastAgentTranscript,
+            entries = agent.entries.mapNotNull { entry ->
+                val role = when (entry.role) {
+                    AgentEntry.Role.USER -> "USER"
+                    AgentEntry.Role.ASSISTANT -> "ASSISTANT"
+                    AgentEntry.Role.REASONING -> "REASONING"
+                    AgentEntry.Role.TOOL -> "TOOL"
+                    AgentEntry.Role.ERROR -> "ERROR"
+                }
+                AgentStore.StoredEntry(role, entry.text)
+            },
+        )
+        agentStore.save(session)
+        agent = agent.copy(sessions = agentStore.sessions())
+    }
+
+    /** Opens a saved conversation, replacing whatever is on screen. */
+    private fun openAgentSession(id: String) {
+        val session = agentStore.load(id) ?: return
+        lastAgentTranscript = session.messages
+        agentStore.setActiveSessionId(id)
+        agent = agent.copy(
+            sessionId = session.id,
+            sessionTitle = session.title,
+            entries = session.entries.mapNotNull { entry ->
+                val role = runCatching { AgentEntry.Role.valueOf(entry.role) }.getOrNull()
+                    ?: return@mapNotNull null
+                AgentEntry(role, entry.text)
+            },
+        )
+    }
+
+    /** Starts a fresh conversation without deleting the saved one. */
+    private fun newAgentSession() {
+        lastAgentTranscript = emptyList()
+        agentStore.setActiveSessionId("")
+        agent = agent.copy(
+            entries = emptyList(),
+            sessionId = "",
+            sessionTitle = "",
+            sessions = agentStore.sessions(),
+        )
+    }
+
+    private fun deleteAgentSession(id: String) {
+        agentStore.delete(id)
+        if (agent.sessionId == id) {
+            lastAgentTranscript = emptyList()
+            agent = agent.copy(entries = emptyList(), sessionId = "", sessionTitle = "")
+        }
+        agent = agent.copy(sessions = agentStore.sessions())
     }
 
     /** Folds one streamed event into the visible transcript. */
@@ -626,7 +791,12 @@ class MainActivity : ComponentActivity() {
 
     private fun clearAgent() {
         lastAgentTranscript = emptyList()
-        agent = agent.copy(entries = emptyList())
+        agent = agent.copy(
+            entries = emptyList(),
+            sessionId = "",
+            sessionTitle = "",
+            sessions = agentStore.sessions(),
+        )
     }
 
     private fun loadBalance() {

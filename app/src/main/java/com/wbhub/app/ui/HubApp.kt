@@ -27,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import com.wbhub.app.agent.ApprovalMode
 import com.wbhub.app.data.Login
 import com.wbhub.app.proto.Wire
 
@@ -57,9 +58,14 @@ fun HubApp(
     onAgentSend: () -> Unit,
     onAgentSelectModel: (String) -> Unit,
     onAgentSelectEffort: (String) -> Unit,
+    onAgentSelectContext: (Int) -> Unit,
     onAgentToggleRoot: (Boolean) -> Unit,
+    onAgentSelectApproval: (ApprovalMode) -> Unit,
     onAgentRequestStorage: () -> Unit,
-    onAgentClear: () -> Unit,
+    onAgentNewSession: () -> Unit,
+    onAgentOpenSession: (String) -> Unit,
+    onAgentDeleteSession: (String) -> Unit,
+    onAgentAnswerApproval: (Boolean) -> Unit,
     agent: AgentState,
     onCopyEndpoint: () -> Unit,
     onCopyModel: (String) -> Unit,
@@ -144,9 +150,14 @@ fun HubApp(
                             onSend = onAgentSend,
                             onSelectModel = onAgentSelectModel,
                             onSelectEffort = onAgentSelectEffort,
+                            onSelectContext = onAgentSelectContext,
                             onToggleRoot = onAgentToggleRoot,
+                            onSelectApproval = onAgentSelectApproval,
                             onRequestStorage = onAgentRequestStorage,
-                            onClear = onAgentClear,
+                            onNewSession = onAgentNewSession,
+                            onOpenSession = onAgentOpenSession,
+                            onDeleteSession = onAgentDeleteSession,
+                            onAnswerApproval = onAgentAnswerApproval,
                         )
                         HubTab.Calls -> CallsScreen(state, onClearCalls, onRefreshCalls)
                         HubTab.Rewards -> RewardsScreen(

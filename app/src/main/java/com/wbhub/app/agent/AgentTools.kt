@@ -71,13 +71,25 @@ class AgentTools(
         ),
     )
 
-    /** Runs one tool call. Unknown names come back as a plain error, not a throw. */
-    fun run(name: String, args: Map<String, Any?>): Outcome = when (name) {
-        "read" -> read(args)
-        "write" -> write(args)
-        "edit" -> edit(args)
-        "bash" -> bash(args)
-        else -> Outcome("unknown tool: $name", false)
+    /**
+     * Runs one tool call. Unknown names come back as a plain error, not a throw.
+     *
+     * The approval gate lives here rather than in the loop so every path into a
+     * tool goes through it, including any future caller.
+     */
+    fun run(name: String, args: Map<String, Any?>, approval: ApprovalMode, ask: (String) -> Boolean): Outcome {
+        if (ToolPolicy.needsApproval(approval, name)) {
+            if (!ask(ToolPolicy.summarize(name, args))) {
+                return Outcome("用户拒绝执行：${ToolPolicy.summarize(name, args)}", false)
+            }
+        }
+        return when (name) {
+            "read" -> read(args)
+            "write" -> write(args)
+            "edit" -> edit(args)
+            "bash" -> bash(args)
+            else -> Outcome("unknown tool: $name", false)
+        }
     }
 
     // ------------------------------------------------------------------ //
@@ -231,6 +243,21 @@ class AgentTools(
         /** The default place for agent work: a visible folder on shared storage. */
         fun defaultWorkDir(): File =
             File(Environment.getExternalStorageDirectory(), "WBHub")
+
+        /**
+         * Whether this device grants root to `su`.
+         *
+         * Running `su -c id` is the only reliable probe: the binary's presence
+         * proves nothing, since it ships on builds where it always refuses. The
+         * call may raise the manager's prompt, so it belongs off the main
+         * thread and only when the user turns the switch on.
+         */
+        fun detectRoot(): Boolean = runCatching {
+            val process = ProcessBuilder("su", "-c", "id").redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            process.waitFor(5, TimeUnit.SECONDS)
+            output.contains("uid=0")
+        }.getOrDefault(false)
 
         private fun tool(
             name: String,

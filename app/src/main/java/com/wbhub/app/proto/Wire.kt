@@ -415,6 +415,7 @@ fun ProtoModel.toHubModel(): HubModel = HubModel(
     efforts = reasoning.supportedEfforts,
     defaultEffort = reasoning.defaultEffort,
     canDisableThinking = reasoning.canDisableThinking,
+    supportedContextWindows = supportedContextWindows,
 )
 
 /**
@@ -445,6 +446,7 @@ data class HubModel(
     val efforts: List<String> = emptyList(),
     val defaultEffort: String? = null,
     val canDisableThinking: Boolean = false,
+    val supportedContextWindows: List<Int> = emptyList(),
 ) {
     val isFree: Boolean get() = multiplier == 0.0
 
@@ -453,6 +455,16 @@ data class HubModel(
 
     /** Whether this model accepts a thinking-effort setting at all. */
     val supportsEffort: Boolean get() = efforts.isNotEmpty()
+
+    /**
+     * Context lengths worth offering. A model that declares none still has a
+     * usable default, so the current window is the only entry.
+     */
+    val contextOptions: List<Int>
+        get() = supportedContextWindows.ifEmpty { listOfNotNull(contextWindow.takeIf { it > 0 }) }
+
+    /** Whether the caller has a real choice of context length. */
+    val hasContextChoice: Boolean get() = supportedContextWindows.size > 1
 }
 
 /**

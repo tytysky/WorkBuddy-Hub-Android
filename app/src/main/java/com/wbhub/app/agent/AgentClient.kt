@@ -58,6 +58,10 @@ class AgentClient {
         modelId: String,
         effort: String?,
         tools: AgentTools,
+        contextWindow: Int = 0,
+        approval: ApprovalMode = ApprovalMode.AUTO,
+        /** Blocks until the user answers; runs on the worker thread. */
+        ask: (String) -> Boolean = { true },
         maxRounds: Int = DEFAULT_MAX_ROUNDS,
         onEvent: (Event) -> Unit,
     ): List<Message> {
@@ -68,7 +72,7 @@ class AgentClient {
         while (round < maxRounds) {
             round++
             val turn = runCatching {
-                streamTurn(credential, transcript, modelId, effort, tools, onEvent)
+                streamTurn(credential, transcript, modelId, effort, contextWindow, tools, onEvent)
             }.getOrElse { error ->
                 Log.e(TAG, "turn failed", error)
                 onEvent(Event.Failure(error.message ?: "请求失败"))
@@ -91,7 +95,7 @@ class AgentClient {
             for (call in turn.calls) {
                 onEvent(Event.ToolStart(call.name))
                 val args = parseArguments(call.arguments)
-                val outcome = tools.run(call.name, args)
+                val outcome = tools.run(call.name, args, approval, ask)
                 onEvent(Event.ToolEnd(call.name, outcome.ok, outcome.text.lineSequence().firstOrNull().orEmpty()))
                 transcript += Message(
                     role = "tool",
@@ -118,10 +122,11 @@ class AgentClient {
         transcript: List<Message>,
         modelId: String,
         effort: String?,
+        contextWindow: Int,
         tools: AgentTools,
         onEvent: (Event) -> Unit,
     ): Turn {
-        val body = buildBody(transcript, modelId, effort, tools)
+        val body = buildBody(transcript, modelId, effort, contextWindow, tools)
         val region = credential.region
         val identity = ChatIdentity.forRegion(region)
         val conn = open(
@@ -232,6 +237,7 @@ class AgentClient {
         transcript: List<Message>,
         modelId: String,
         effort: String?,
+        contextWindow: Int,
         tools: AgentTools,
     ): String {
         val messages = JSONArray()
@@ -253,6 +259,9 @@ class AgentClient {
             // run a pointless round trip.
             put("tool_choice", "auto")
             if (!effort.isNullOrBlank()) put("reasoning_effort", effort)
+            // Only sent when the account actually chose a length; leaving it
+            // out lets the model use its own default.
+            if (contextWindow > 0) put("context_window", contextWindow)
         }
         // The shared shaping rules still apply, so the same role and
         // tool_choice normalisation the bridge performs is reused here.

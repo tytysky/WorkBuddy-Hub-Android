@@ -7,7 +7,9 @@ import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.ui.graphics.vector.ImageVector
+import com.wbhub.app.agent.AgentStore
 import com.wbhub.app.agent.AgentTools
+import com.wbhub.app.agent.ApprovalMode
 import com.wbhub.app.bridge.CallRecord
 import com.wbhub.app.data.CheckinItem
 import com.wbhub.app.proto.Balance
@@ -19,7 +21,7 @@ import com.wbhub.app.proto.Wire
 enum class HubTab(val label: String, val icon: ImageVector) {
     Credential("凭证", Icons.Default.Key),
     Bridge("API 平台", Icons.Default.Hub),
-    Agent("Agent", Icons.Default.SmartToy),
+    Agent("对话", Icons.Default.SmartToy),
     Calls("调用记录", Icons.Default.ReceiptLong),
     Rewards("积分", Icons.Default.CardGiftcard),
 }
@@ -64,10 +66,23 @@ data class AgentState(
     val input: String = "",
     val modelId: String = "",
     val effort: String = "",
+    val contextWindow: Int = 0,
     val running: Boolean = false,
-    val useRoot: Boolean = false,
+    /** Whether tool calls may run as root. Only offered once root is confirmed. */
+    val exposeRoot: Boolean = false,
+    /** Whether this device actually granted root, probed on demand. */
+    val rootAvailable: Boolean = false,
+    val approval: ApprovalMode = ApprovalMode.AUTO,
     val storageGranted: Boolean = false,
     val workDir: String = AgentTools.defaultWorkDir().absolutePath,
+    /** Title of the conversation in progress, shown next to the session picker. */
+    val sessionTitle: String = "",
+    /** Pending approval request, or null when nothing is waiting. */
+    val pendingApproval: String? = null,
+    /** Id of the conversation in progress; empty means nothing is saved yet. */
+    val sessionId: String = "",
+    /** Saved conversations, newest first, for the picker. */
+    val sessions: List<AgentStore.Session> = emptyList(),
 )
 
 /** Which operation is in flight, so each control can show its own indicator. */
