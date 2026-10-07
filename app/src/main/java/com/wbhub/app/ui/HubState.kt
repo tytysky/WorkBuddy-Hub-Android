@@ -34,11 +34,11 @@ data class HubState(
     val expiryText: String = "",
     val bridgeRunning: Boolean = false,
     val port: Int = 8765,
-    val secret: String = "wb-local",
-    /** Whether the endpoint also answers on the local network. */
-    val lanEnabled: Boolean = false,
+    val secret: String = "wty20061224",
+    /** Whether the endpoint also answers on other interfaces. */
+    val lanEnabled: Boolean = true,
     /** Key peers on the network must present; separate from the local one. */
-    val lanKey: String = "wb-lan",
+    val lanKey: String = "wty20061224",
     /** Addresses a peer on the same network can use, empty when none. */
     val lanAddresses: List<String> = emptyList(),
     val status: String = "",

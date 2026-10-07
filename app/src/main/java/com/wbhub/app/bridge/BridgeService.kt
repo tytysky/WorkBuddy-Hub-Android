@@ -215,7 +215,7 @@ class BridgeService : Service() {
             private set
 
         const val DEFAULT_PORT = 8765
-        const val DEFAULT_SECRET = "wb-local"
+        const val DEFAULT_SECRET = "wty20061224"
         const val EXTRA_PORT = "port"
         const val EXTRA_SECRET = "secret"
         private const val MODEL_REFRESH_MS = 5 * 60 * 1000L

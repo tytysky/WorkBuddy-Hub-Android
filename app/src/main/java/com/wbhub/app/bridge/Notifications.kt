@@ -85,7 +85,7 @@ object Notifications {
         NotificationCompat.Builder(context, BRIDGE_CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_hub)
             .setContentTitle("WorkBuddy 本地 API 平台")
-            .setContentText("127.0.0.1:$port 运行中")
+            .setContentText("端口 $port 运行中")
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(contentIntent(context))

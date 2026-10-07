@@ -14,18 +14,20 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * A small OpenAI-compatible endpoint on loopback.
+ * A small OpenAI-compatible endpoint.
  *
  * Requests and responses are handled as raw bytes: a request body is declared
  * in bytes and JSON may contain multi-byte characters, so decoding into
  * characters before reading would desynchronise the stream.
  *
- * Only loopback is served and every request must present the shared secret,
- * because the endpoint holds a credential.
+ * Every request must present the shared secret, because the endpoint holds a
+ * credential. The listener is bound to every interface (IPv4 and IPv6) when
+ * LAN access is on, and to loopback only when it is off.
  */
 class BridgeServer(
     private val port: Int,
@@ -49,7 +51,7 @@ class BridgeServer(
 ) {
 
     /** Host values a loopback-addressed request may carry. */
-    private val loopbackHosts = setOf("127.0.0.1", "localhost", "[::1]")
+    private val loopbackHosts = setOf("127.0.0.1", "localhost", "::1", "[::1]")
 
     /** Upper bound on a request body, so one client cannot exhaust memory. */
     private val requestBodyLimit = 64 * 1024 * 1024
@@ -57,40 +59,61 @@ class BridgeServer(
     private val running = AtomicBoolean(false)
     private val pool = Executors.newCachedThreadPool()
     private val client = UpstreamClient()
-    private var server: ServerSocket? = null
+
+    /**
+     * One listener per address family.
+     *
+     * IPv4 and IPv6 are bound separately rather than relying on a single
+     * dual-stack socket: a device may have `bindv6only` set or no IPv6 at all,
+     * and either family failing must not take the other down with it.
+     */
+    private val servers = CopyOnWriteArrayList<ServerSocket>()
 
     fun start() {
         if (running.getAndSet(true)) return
-        // Bound to every interface when the local network is allowed, so the
-        // device's own address is reachable; loopback otherwise.
-        val bindAddress = if (lanEnabled) "0.0.0.0" else "127.0.0.1"
-        val socket = try {
-            ServerSocket(port, 64, InetAddress.getByName(bindAddress))
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "cannot bind $bindAddress:$port", e)
+        // Every interface when access is open, so the device's own address is
+        // reachable over either family; loopback otherwise. Binding both the
+        // IPv4 and IPv6 wildcard is harmless when the kernel already makes one
+        // dual-stack: the redundant bind fails and is tolerated.
+        val addresses = if (lanEnabled) listOf("::", "0.0.0.0") else listOf("::1", "127.0.0.1")
+        val opened = ArrayList<ServerSocket>()
+        for (address in addresses) {
+            try {
+                opened += ServerSocket(port, 64, InetAddress.getByName(address))
+            } catch (e: Exception) {
+                android.util.Log.w(TAG, "cannot bind $address:$port", e)
+            }
+        }
+        if (opened.isEmpty()) {
             running.set(false)
             return
         }
-        server = socket
-        android.util.Log.i(TAG, "bridge listening on $bindAddress:$port")
-        Thread {
-            while (running.get()) {
-                val accepted = try {
-                    socket.accept()
-                } catch (e: SocketException) {
-                    break
-                } catch (e: Exception) {
-                    if (running.get()) android.util.Log.w(TAG, "accept failed", e)
-                    continue
-                }
-                pool.submit { handle(accepted) }
+        servers.clear()
+        servers.addAll(opened)
+        for (socket in opened) {
+            android.util.Log.i(TAG, "bridge listening on ${socket.inetAddress.hostAddress}:$port")
+            Thread { acceptLoop(socket) }.apply { isDaemon = true; start() }
+        }
+    }
+
+    private fun acceptLoop(socket: ServerSocket) {
+        while (running.get()) {
+            val accepted = try {
+                socket.accept()
+            } catch (e: SocketException) {
+                break
+            } catch (e: Exception) {
+                if (running.get()) android.util.Log.w(TAG, "accept failed", e)
+                continue
             }
-        }.apply { isDaemon = true; start() }
+            pool.submit { handle(accepted) }
+        }
     }
 
     fun stop() {
         running.set(false)
-        runCatching { server?.close() }
+        servers.forEach { runCatching { it.close() } }
+        servers.clear()
         pool.shutdownNow()
     }
 
@@ -390,7 +413,12 @@ class BridgeServer(
 
     /** Whether the accepted connection came from this device. */
     private fun isLoopbackRequest(socket: Socket): Boolean = runCatching {
-        socket.inetAddress?.isLoopbackAddress ?: false
+        val address = socket.inetAddress ?: return@runCatching false
+        if (address.isLoopbackAddress) return@runCatching true
+        // A dual-stack listener reports an IPv4 loopback peer as
+        // ::ffff:127.0.0.1, which Java does not treat as a loopback address.
+        val host = address.hostAddress.orEmpty().removePrefix("::ffff:").substringBefore('%')
+        host == "::1" || host.startsWith("127.")
     }.getOrDefault(false)
 
     /** The peer's address, unmapped from its IPv4-in-IPv6 form when needed. */
@@ -404,68 +432,60 @@ class BridgeServer(
     /**
      * Whether a Host header names something this server answers on.
      *
-     * Loopback always passes. With LAN access on, a peer addresses the device
-     * by an address it actually holds or by a name resolving to one, so those
-     * pass too; an arbitrary name still does not.
+     * Loopback always passes. With open access the endpoint is intentionally
+     * reachable from anywhere, so a literal address — IPv4 or IPv6 — passes as
+     * is; a rebinding attack addresses the server by a hostname rather than by
+     * an address it actually holds. A name passes only if it resolves.
      */
     private fun hostIsAllowed(host: String?): Boolean {
         if (host.isNullOrBlank()) return false
         val name = hostnameOf(host).lowercase()
         if (name in loopbackHosts) return true
         if (!lanEnabled) return false
-        // A private address in the header is the normal case for a peer on the
-        // same network; anything else would be a name this device does not own.
-        return isPrivateAddress(name)
+        val literal = name.removePrefix("[").removeSuffix("]")
+        if (isIpLiteral(literal)) return true
+        return runCatching { InetAddress.getAllByName(name).isNotEmpty() }.getOrDefault(false)
     }
 
     /**
      * Whether a browser-sent Origin is allowed; an absent Origin passes.
      *
-     * A browser only sends this for cross-origin calls, so its presence means
-     * a page is driving the request and it must be a page on this device or, in
-     * LAN mode, on a peer that could legitimately call the endpoint.
+     * A browser only sends this for cross-origin calls, so its presence means a
+     * page is driving the request; it must be a page on this device or, with
+     * open access, on a host that could legitimately reach the endpoint.
      */
     private fun originIsAllowed(origin: String?): Boolean {
         if (origin.isNullOrBlank()) return true
         return runCatching {
-            val host = java.net.URI(origin).host?.lowercase()
+            val host = java.net.URI(origin).host?.lowercase()?.removePrefix("[")?.removeSuffix("]")
+                ?: return false
             when {
-                host == null -> false
-                host in loopbackHosts || host == "::1" -> true
-                lanEnabled -> isPrivateAddress(host)
-                else -> false
+                host in loopbackHosts -> true
+                !lanEnabled -> false
+                isIpLiteral(host) -> true
+                else -> runCatching { InetAddress.getAllByName(host).isNotEmpty() }.getOrDefault(false)
             }
         }.getOrDefault(false)
     }
 
-    /**
-     * Whether an address is inside a private range.
-     *
-     * The endpoint is only meant for the local network, so the check is the
-     * private blocks rather than "any address": a public name resolving here
-     * would mean the request came from somewhere it should not have.
-     */
-    private fun isPrivateAddress(host: String): Boolean {
-        if (host == "::1") return true
-        val parts = host.split(".")
-        if (parts.size != 4) {
-            // A hostname rather than a literal: accept it only if it resolves
-            // into a private range, which covers the "phone.local" case.
-            return runCatching {
-                InetAddress.getAllByName(host).any { isPrivateAddress(it.hostAddress.orEmpty()) }
-            }.getOrDefault(false)
+    /** Whether a string is a literal IPv4 or IPv6 address. */
+    private fun isIpLiteral(value: String): Boolean =
+        isIpv4Literal(value) || isIpv6Literal(value)
+
+    private fun isIpv4Literal(value: String): Boolean =
+        value.split(".").let { parts ->
+            parts.size == 4 && parts.all { p ->
+                p.isNotEmpty() && p.length <= 3 && p.all(Char::isDigit) && p.toInt() in 0..255
+            }
         }
-        val octets = parts.map { it.toIntOrNull() ?: return false }
-        return when {
-            octets[0] == 10 -> true
-            octets[0] == 192 && octets[1] == 168 -> true
-            // 172.16.0.0 - 172.31.255.255
-            octets[0] == 172 && octets[1] in 16..31 -> true
-            // Link-local, the range Android hands out for hotspots.
-            octets[0] == 169 && octets[1] == 254 -> true
-            else -> false
-        }
-    }
+
+    /** A permissive IPv6 shape: colon-separated hex groups, optionally with a
+     *  trailing dotted-quad. Exact validation is left to the socket, which has
+     *  already accepted the connection by this point. */
+    private fun isIpv6Literal(value: String): Boolean =
+        value.contains(":") &&
+            value.count { it == ':' } >= 2 &&
+            value.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' || it == ':' || it == '.' }
 
     private fun statusText(code: Int): String = when (code) {
         200 -> "OK"

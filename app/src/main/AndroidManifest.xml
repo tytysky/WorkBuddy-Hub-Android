@@ -44,7 +44,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Local OpenAI-compatible bridge serving on loopback for user-configured clients" />
+                android:value="Local OpenAI-compatible bridge for user-configured clients" />
         </service>
     </application>
 </manifest>

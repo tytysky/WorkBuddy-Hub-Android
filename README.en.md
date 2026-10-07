@@ -10,7 +10,7 @@ it and it works — no official API, and no computer required.
 Phone
 ├─ WB Hub
 │    ├─ OAuth sign-in (China / Global)
-│    ├─ Local forwarding endpoint  127.0.0.1:8765
+│    ├─ Forwarding endpoint  0.0.0.0 / :: :8765 (all interfaces by default)
 │    └─ Overlay status panel (keeps the process from being frozen)
 │
 └─ Any OpenAI-compatible client
@@ -83,7 +83,7 @@ A `models.json`-style example:
     "workbuddy": {
       "baseUrl": "http://127.0.0.1:8765/v1",
       "api": "openai-completions",
-      "apiKey": "wb-local",
+      "apiKey": "wty20061224",
       "models": [
         { "id": "hy3" }
       ]
@@ -111,7 +111,7 @@ tooling — one permission grant in system settings.
 client request
   │  OpenAI protocol
   ▼
-local forwarding endpoint (127.0.0.1:8765)
+local forwarding endpoint (all interfaces 0.0.0.0 / ::, default port 8765)
   │  ① reshape the body (the upstream requires stream, rejects the developer role)
   │  ② add the WorkBuddy-specific identity headers
   │  ③ attach your access token
@@ -122,8 +122,10 @@ WorkBuddy upstream (copilot.tencent.com / www.workbuddy.ai)
 passed through to the client unchanged
 ```
 
-The endpoint listens on `127.0.0.1` only and requires a shared secret on every
-request, so other apps on the device cannot call it.
+The endpoint listens on every interface by default (IPv4 `0.0.0.0` and IPv6 `::`)
+and requires a shared secret on every request, so devices on the same network can
+reach it. External access can be turned off in the app, falling back to
+`127.0.0.1` only.
 
 The upstream endpoints are the private ones the WorkBuddy client uses, not a
 public API. An upstream change can break the integration and would need

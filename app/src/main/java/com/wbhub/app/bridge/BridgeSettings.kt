@@ -160,7 +160,7 @@ object BridgeSettings {
      * The key local clients present. Fixed: it is written into configs on this
      * device and there is nothing to gain from rotating it.
      */
-    const val DEFAULT_API_KEY = "wb-local"
+    const val DEFAULT_API_KEY = "wty20061224"
 
     /**
      * The key local clients present.
@@ -220,16 +220,17 @@ object BridgeSettings {
             .edit().putString(KEY_LAN_KEY, trimmed).apply()
     }
 
-    const val DEFAULT_LAN_KEY = "wb-lan"
+    const val DEFAULT_LAN_KEY = "wty20061224"
 
     /**
-     * Whether the endpoint is reachable from the local network.
+     * Whether the endpoint is reachable from other devices.
      *
-     * Off by default: the endpoint holds a credential, and loopback is the
-     * only binding that needs no further trust decision.
+     * On by default: the endpoint is meant to be reachable from everywhere, and
+     * the shared key is what keeps it from being open. Turning it off falls back
+     * to loopback only.
      */
     fun lanEnabled(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_LAN, false)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_LAN, true)
 
     fun setLanEnabled(context: Context, value: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -282,39 +283,27 @@ object BridgeSettings {
 }
 
 /**
- * Reads the address a peer on the local network should use.
+ * Reads the addresses a peer on another device should use.
  *
- * Only the Wi-Fi interface counts, and only its IPv4 address is reported. A
- * mobile-data address belongs to the carrier's internal network and looks like a
- * private one, and a link-local IPv6 address needs a scope suffix that clients
- * read inconsistently, so neither is worth handing out.
+ * Both IPv4 and IPv6 addresses of every non-loopback interface are reported, so
+ * a client can reach the endpoint over whichever family it has. Loopback and
+ * link-local addresses are skipped: a link-local IPv6 address needs a scope
+ * suffix that clients read inconsistently, and a link-local IPv4 address is not
+ * routable off the device.
  */
 object LanAddresses {
 
     fun current(): List<String> = runCatching {
         java.net.NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
-            .filter { iface ->
-                runCatching { iface.isUp && !iface.isLoopback }.getOrDefault(false) && isWifi(iface.name)
-            }
+            .filter { iface -> runCatching { iface.isUp && !iface.isLoopback }.getOrDefault(false) }
             .flatMap { iface ->
-                iface.interfaceAddresses
-                    // An IPv4 literal is four dotted octets; anything else here
-                    // is IPv6, which a peer would have to be told how to scope.
-                    .mapNotNull { it.address?.hostAddress }
-                    .filter { it.count { c -> c == '.' } == 3 }
+                iface.interfaceAddresses.mapNotNull { it.address?.hostAddress }
             }
-            .filter { it.isNotEmpty() && !it.startsWith("127.") }
+            .map { it.substringBefore('%') }
+            .filter { it.isNotEmpty() && !it.startsWith("127.") && it != "::1" }
+            .filterNot { it.startsWith("fe80:") || it.startsWith("169.254.") }
             .distinct()
     }.getOrDefault(emptyList())
-
-    /**
-     * Interface names Android uses for Wi-Fi.
-     *
-     * A hotspot shows up under an `ap` or `swlan` name, and those are worth
-     * reporting too: the device is then the network a peer joins.
-     */
-    private fun isWifi(name: String): Boolean =
-        name.startsWith("wlan") || name.startsWith("ap") || name.startsWith("swlan")
 }
 
 /** Shape of the stealth indicator. */

@@ -429,7 +429,7 @@ fun BridgeScreen(
                 Column(Modifier.padding(16.dp), Arrangement.spacedBy(10.dp)) {
                     Text("本机密钥", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "本机客户端（含内置对话）用它调用端点，与局域网密钥互相独立。",
+                        "本机客户端（含内置对话）用它调用端点，与外部密钥互相独立。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -454,9 +454,9 @@ fun BridgeScreen(
                 Column(Modifier.padding(16.dp), Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text("局域网访问", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                            Text("外部访问", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                             Text(
-                                if (state.lanEnabled) "同一网络下的设备可以调用" else "仅本机可用",
+                                if (state.lanEnabled) "所有网络接口均可调用（含 IPv6）" else "仅本机可用",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -467,18 +467,20 @@ fun BridgeScreen(
                         val address = state.lanAddresses.firstOrNull()
                         if (address == null) {
                             Text(
-                                "未检测到局域网地址，请连接 Wi-Fi 后重试。",
+                                "未检测到对外地址，请连接 Wi-Fi 后重试。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error,
                             )
                         } else {
-                            Text("局域网地址", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(
-                                "http://$address:${state.port}/v1",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                            Text("局域网密钥", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("可用地址", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            state.lanAddresses.forEach { addr ->
+                                Text(
+                                    "http://${formatHost(addr)}:${state.port}/v1",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            Text("外部密钥", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             OutlinedTextField(
                                 value = lanKeyText,
                                 onValueChange = { lanKeyText = it },
@@ -494,8 +496,8 @@ fun BridgeScreen(
                             }
                         }
                         Text(
-                            "⚠ 仅在可信网络下开启。密钥以明文 HTTP 传输，" +
-                                "同网段的其他人可能窃取，公共 Wi-Fi 下请关闭。",
+                            "⚠ 端点对全部网络接口开放。密钥以明文 HTTP 传输，" +
+                                "他人可能窃取，公共网络下请关闭。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                         )
@@ -926,6 +928,10 @@ fun HelpDialog(state: HubState, onDismiss: () -> Unit, onCopyEndpoint: () -> Uni
 internal fun realmName(region: Wire.Region): String =
     if (region == Wire.Region.GLOBAL) "国际版" else "国内版"
 
+/** Wraps an IPv6 literal in brackets so it can carry a `:port` suffix in a URL. */
+internal fun formatHost(host: String): String =
+    if (host.contains(":") && !host.startsWith("[")) "[$host]" else host
+
 
 /** Result of one check-in attempt, or a batch of them. */
 @Composable
@@ -1180,7 +1186,7 @@ private fun CallRow(record: CallRecord, models: List<HubModel>) {
                 // Only shown for network calls: this device is the default and
                 // labelling every local row would bury the ones that are not.
                 Text(
-                    "来自局域网 ${record.sourceIp}",
+                    "来自外部 ${record.sourceIp}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.tertiary,
                 )
